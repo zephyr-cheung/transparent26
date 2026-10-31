@@ -32,7 +32,7 @@ Env:
   T26_MAXFIX    stop after this many neutralised layers (0 = never stop)
   T26_DEEP      1 (default) = also drop contents/filters/opacity; 0 = hidden only
   T26_MAXHITS   mute logging after this many hits (never stops the process)
-  T26_TREECAP   how many trees `tree` mode dumps (default 3)
+  T26_TREECAP   how many distinct menu bar roots `tree` dumps (default 8)
   T26_LOG       log file (default /tmp/t26hook.log)
 
 Docs: docs/01-how-it-works.md, 02-reverse-engineering.md, 03-dead-ends.md,
@@ -85,6 +85,8 @@ class State(object):
     hunt_silent = 0
     theme_logged = 0
     tree_logged = 0
+    trees = set()      # root pointers already dumped (one per display)
+    last_tree = 0.0
     fast_logged = 0
     passes = 0
     hitlimit = False
@@ -356,7 +358,9 @@ def on_ca_setter(frame, bp_loc, internal_dict):
 # CA::Render::Layer::set_name for these layers), so instead watch every setter
 # that can make a layer look like frosted glass. Only hits whose call stack
 # mentions the menu bar are logged, everything else is just counted.
-TREE_CAP = int(os.environ.get("T26_TREECAP", "3"))
+TREE_CAP = int(os.environ.get("T26_TREECAP", "8"))
+TREE_QUIET = 4.0   # seconds without a new root before `tree` ends
+TREE_LIMIT = 8.0   # hard cap on how long `tree` keeps dumping
 HUNT_CAP = 240
 HUNT_NEEDLES = ("menu_bar", "MenuBar", "menubar")
 
@@ -829,17 +833,31 @@ def _on_resize_pill(frame):
             return not _done("settled")
         return True
 
+    now = time.time()
+    # Finish once no new display has shown up for a while (or the first tree is
+    # older than TREE_LIMIT): with the root-based cap alone a single-display Mac
+    # would idle until the whole time budget ran out.
+    if S.tree_logged and (now - S.last_tree > TREE_QUIET or now - S.t0 > TREE_LIMIT):
+        return not _done("logged %d tree(s)" % S.tree_logged)
     if S.tree_logged >= TREE_CAP:
         return True
-    S.tree_logged += 1
-    # walk up to the root of the bar (tree mode only: in fix mode the climb is
-    # folded into the single fix expression, every eval is a stop-the-world)
+    # Walk up to the root of the bar (tree mode only: in fix mode the climb is
+    # folded into the single fix expression, every eval is a stop-the-world).
+    # The dump is deduplicated by root: one rebuild fires three pill resizes, so
+    # counting hits instead of roots would spend the whole budget on the first
+    # display and never show the second one.
     root = _root_of(frame, layer)
+    if not root or root in S.trees:
+        return True
+    S.trees.add(root)
+    S.tree_logged += 1
+    S.last_tree = now
     log(_layer_line(frame, 0, layer, "MENUBAR layer: "))
-    log("  tree from root:")
+    log("  tree from root %#x (menu bar %d of at most %d):"
+        % (root, S.tree_logged, TREE_CAP))
     _walk(frame, root, 1, [40])
 
-    return True if S.tree_logged < TREE_CAP else not _done("logged %d tree(s)" % TREE_CAP)
+    return True
 
 # --- the actual surgery --------------------------------------------------
 def _strip_glass(frame, proc, obj, text, kind):

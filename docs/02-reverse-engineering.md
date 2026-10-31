@@ -86,6 +86,13 @@ The tree is dumped by plain ObjC reflection (`_walk` in
 `libexec/t26/ws_hook.py`): `-[CALayer sublayers]`, `-name`, `-isHidden`,
 `-filters`, `-backgroundFilters`, `-compositingFilter`, `-className`.
 
+`t26 tree` deduplicates by **root pointer**, not by hit: one rebuild fires three
+pill resizes, so a hit-based cap spends the whole budget re-dumping the first
+display and never shows the second one. Each distinct root is dumped once (up to
+`T26_TREECAP`, 8 by default), the run ends after 4s without a new root or after
+8s in total, and each dump is labelled with its root pointer — which is exactly
+what a "did WindowServer recreate this layer?" comparison needs.
+
 ## 4. The menu bar layer names
 
 They are all **plain `CALayer`s** — there is no `SLMenuBar*Layer` ObjC class in
