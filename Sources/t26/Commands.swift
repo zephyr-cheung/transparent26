@@ -589,6 +589,12 @@ func commandAgent(_ options: Options, layout: Layout) -> Never {
         let pidLine = print.output.split(separator: "\n")
             .first { $0.contains("pid = ") }?
             .trimmingCharacters(in: .whitespaces) ?? ""
+        // What the installed plist actually runs: the one-shot repair by default,
+        // the guarded settle when it was installed with --full.
+        let plistText = (try? String(contentsOfFile: agentPlist, encoding: .utf8)) ?? ""
+        let mode = !installed ? "—"
+            : plistText.contains("<string>--full</string>") ? "guarded (--full)"
+            : "one-shot (--fast)"
 
         if options.json {
             printJSON([
@@ -597,6 +603,7 @@ func commandAgent(_ options: Options, layout: Layout) -> Never {
                 "pid": pidLine.replacingOccurrences(of: "pid = ", with: ""),
                 "plist": agentPlist,
                 "agent": layout.agent ?? "",
+                "mode": mode,
                 "log": "/tmp/t26-agent.log",
             ])
             exit(ExitCode.ok.rawValue)
@@ -604,6 +611,7 @@ func commandAgent(_ options: Options, layout: Layout) -> Never {
         out(Style.bold("t26 \(t26Version)") + Style.dim(" · agent"))
         out(row("installed", installed ? ok(agentPlist) : warn("no — sudo t26 agent install")))
         out(row("running", running ? ok(pidLine) : warn("no")))
+        out(row("mode", mode))
         out(row("binary", layout.agent.map(ok) ?? warn("missing — sudo make install")))
         out(row("log", "/tmp/t26-agent.log"))
         out()
