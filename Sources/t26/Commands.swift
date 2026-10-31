@@ -181,6 +181,21 @@ func finish(_ options: Options, _ outcome: EngineOutcome, layout: Layout) -> Nev
             notes.append(Style.dim("  inspect the tree: sudo t26 tree"))
         }
 
+    case .now:
+        let hidden = summary?.layersNeutralised ?? 0
+        if hidden > 0 {
+            headline = ok("menu bar backdrop removed — \(elapsed(outcome.seconds))")
+            rows.append(("hidden", "\(hidden) layer(s), no rebuild needed"))
+            rows.append(("how", "reached through the space's CAContext, not a pill resize"))
+            rows.append(("debugger", "detached — WindowServer runs at full speed"))
+            rows.append(("undo", "log out or reboot (nothing is persisted)"))
+        } else {
+            code = .failed
+            headline = bad("no backdrop found through any CAContext (\(elapsed(outcome.seconds)))")
+            notes.append(Style.dim("  run one `sudo t26 settle` first: it records the space pointer"))
+            notes.append(Style.dim("  inspect: sudo t26 space"))
+        }
+
     case .fix:
         let hidden = summary?.layersNeutralised ?? 0
         if hidden > 0 {

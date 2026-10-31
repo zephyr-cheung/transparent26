@@ -207,13 +207,15 @@ send "process continue"
 end=$((SECS * 2))
 for _ in $(seq $end); do
     sleep 0.5
-    awk -v s="$SEP" 'index($0,s){f=1} f' "$LOG" 2>/dev/null | grep -q "^t26: done:" && break
+    awk -v s="$SEP" 'index($0,s){f=1} f' "$LOG" 2>/dev/null \
+        | grep -qE "^t26: (done:|now: neutralised)" && break
 done
 
 # A run that never reached a conclusion (time budget used up while still
 # waiting for the last display) still needs a verdict in the log: the CLI
 # reports on it, and a silent ending looks like a crash.
-if ! awk -v s="$SEP" 'index($0,s){f=1} f' "$LOG" 2>/dev/null | grep -q "^t26: done:"; then
+if ! awk -v s="$SEP" 'index($0,s){f=1} f' "$LOG" 2>/dev/null \
+        | grep -qE "^t26: (done:|now: neutralised)"; then
     if [ "$MODE" = settle ]; then
         echo "t26: done: timed out after ${SECS}s — the menu bar was not confirmed on every display" >>"$LOG"
     else

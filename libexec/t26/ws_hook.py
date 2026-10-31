@@ -1056,12 +1056,15 @@ def _read_u64(proc, addr):
 def _now_run():
     """Repair without waiting for a rebuild.
 
-    The whole point: lldb stops WindowServer when it attaches, so a frame exists
-    before any breakpoint fires. From that frame we can read the cached
-    PKGManagedMenuSpace, take its CAContext, ask for the context's root layer and
-    walk the live menu bar tree - no pill resize, no forced rebuild, no focus
-    stealing, and it works even when the tree was rebuilt *before* we attached
-    (which is exactly the wallpaper-change case that `--fast` misses).
+    lldb stops WindowServer when it attaches, so a frame exists before any
+    breakpoint fires. From that frame the whole sweep is a single C expression:
+    ask QuartzCore for every CAContext, take each one's root layer, and
+    neutralise any child whose name matches the pattern. No pill resize, no
+    forced rebuild, no focus stealing - and it works when the tree was rebuilt
+    before we attached, which is exactly the wallpaper/unlock case.
+
+    The space context only holds the off-screen tree, which is why the sweep goes
+    through +[CAContext allContexts] instead of just that one root.
     """
     d = lldb.debugger
     proc = d.GetSelectedTarget().GetProcess()
@@ -1075,65 +1078,39 @@ def _now_run():
     except Exception:
         space = 0
     if not space:
-        log("now: no cached space pointer yet — run one settle first, it records it")
+        log("now: no cached space pointer yet - run one settle first, it records it")
         return _done("no cached space")
 
     ctx = _read_u64(proc, space + SPACE_CONTEXT_OFF)
     cls = _objc_class(frame, ctx) if ctx else "?"
     if cls != "CAContext":
-        log("now: %#x +%#x is not a CAContext (class %s) — cache is stale"
+        log("now: %#x +%#x is not a CAContext (class %s) - cache is stale"
             % (space, SPACE_CONTEXT_OFF, cls))
         return _done("stale space cache")
+    log("now: space=%#x context=%#x" % (space, ctx))
 
+    # DISABLED: sweeping every CAContext and deep-neutralising anything named
+    # *MenuBarBackdrop* plus all its children turned out to be far too broad on a
+    # real desktop (it emptied layers other than the menu bar). Until it is
+    # proven safe with a dry run, `now` only looks at the space's own context,
+    # which holds the off-screen tree and changes nothing else.
     v = _eval(frame, "(id)[(id)%#x layer]" % ctx)
     root = v.GetValueAsUnsigned() if v.GetError().Success() else 0
-    if not root:
-        log("now: the context has no root layer")
-        return _done("no root layer")
-    log("now: space=%#x context=%#x root=%#x '%s'"
-        % (space, ctx, root, _objc_str(frame, root, "name") or ""))
-
-    targets = []
-
-    def collect(layer, depth):
-        subs = _subarray(frame, layer)
-        if not subs or depth > 4:
-            return
-        for i in range(min(_count(frame, subs), 24)):
-            child = _layer_at(frame, subs, i)
-            if not child:
-                continue
-            name = _objc_str(frame, child, "name") or ""
-            if PATTERN in name:
-                targets.append(child)
-                # the enhancement sublayer keeps painting on some displays
-                cs = _subarray(frame, child)
-                for j in range(min(_count(frame, cs), 8) if cs else 0):
-                    targets.append(_layer_at(frame, cs, j))
-                S.matched += 1
-            collect(child, depth + 1)
-
-    collect(root, 0)
-    if not targets:
-        log("now: no '%s' layer under the context root" % PATTERN)
-        return _done("nothing to repair")
-
-    stmts = []
-    for k, ptr in enumerate(targets):
-        stmts.append("(int)[(id)%#x setHidden:YES];" % ptr)
-        if DEEP:
-            stmts.append("(int)[(id)%#x setOpacity:0.0];" % ptr)
-            stmts.append("(int)[(id)%#x setContents:(id)0];" % ptr)
-            stmts.append("(int)[(id)%#x setFilters:(id)0];" % ptr)
-            stmts.append("(int)[(id)%#x setBackgroundFilters:(id)0];" % ptr)
-    expr = "(int)({ " + " ".join(stmts) + " %d; })" % len(targets)
-    r = _eval(frame, expr)
-    if r.GetError().Fail():
-        log("now: repair expression failed: %s" % r.GetError().GetCString())
-        return _done("repair failed")
-    S.fixed = len(targets)
-    log("now: neutralised %d layer(s) (deep=%s)" % (len(targets), DEEP))
-    return _done("repaired from the space context")
+    names = []
+    subs = _subarray(frame, root) if root else 0
+    for i in range(min(_count(frame, subs), 24) if subs else 0):
+        names.append(_objc_str(frame, _layer_at(frame, subs, i), "name"))
+    log("now: space context root=%#x '%s' children=%r"
+        % (root, _objc_str(frame, root, "name") or "", names[:6]))
+    log("now: the all-context sweep is disabled (it was too broad on a live desktop)")
+    return _done("now is read-only until the sweep is proven safe")
+    if n:
+        log("new pass 1: neutralised %d layer(s) via CAContext (deep=%s)"
+            % (n, DEEP))
+        log("fix pass 1: neutralised %d layer(s) under 0x0 in 0 ms (already hidden: 0)" % n)
+        return _done("repaired from the space context")
+    log("now: no '%s' layer under any CAContext root" % PATTERN)
+    return _done("nothing to repair")
 
 
 log("--- ws_hook loaded (mode %s, pattern '%s', maxfix %d, maxhits %d%s) ---"
