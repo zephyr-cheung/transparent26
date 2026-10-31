@@ -16,6 +16,15 @@ struct Layout {
     var engine: String
     var hook: String
 
+    /// The launchd watcher that repairs again after an unlock / display change.
+    /// Optional: only `t26 agent` needs it.
+    var agent: String? {
+        let env = ProcessInfo.processInfo.environment
+        if let path = env["T26_AGENT"] { return path }
+        let candidate = root + "/t26-agent"
+        return FileManager.default.fileExists(atPath: candidate) ? candidate : nil
+    }
+
     var root: String { (engine as NSString).deletingLastPathComponent }
     var log: String { "/tmp/t26hook.log" }
     var control: String { "/tmp/t26-ctl" }

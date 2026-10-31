@@ -88,6 +88,16 @@ WindowServer repainted the backdrop after the first pill. The current strategy:
 - `T26_SETTLE_MAX` (60s by default) is the fallback: let go with a WARNING instead
   of keeping the breakpoints armed forever and dragging the machine down.
 
+## What `--guard` costs
+
+`--guard N` keeps the breakpoints armed for N seconds after the last rebuild, so
+an unlock burst (bar rebuilt once per display, sometimes twice) is repaired by a
+single attachment. The visible cost is the same per-hit stop (~15–30 ms) for the
+rebuilds inside that window, plus one attach (~0.5–1 s); after that the debugger
+detaches and the cost is zero again. Measured on a dummy target that rebuilds for
+4 s and then idles: 8 rebuilds repaired, detach 3 s after the last one, 9.5 s
+wall clock for the whole run.
+
 ## Why `settle` can let go
 
 WindowServer sets the backdrop's `hidden` back to `NO` on every rebuild, but it

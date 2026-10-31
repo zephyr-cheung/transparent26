@@ -2,7 +2,7 @@ import Foundation
 
 enum Command: String {
     case settle, fix, tree, probe, hunt, theme
-    case status, doctor, logs, abort
+    case status, doctor, logs, abort, agent
     case version, help
 
     var needsWindowServer: Bool {
@@ -37,6 +37,7 @@ struct Options {
     var deep = true
     var settleMin: Int?
     var settleMax: Int?
+    var guardSeconds: Int?
     var pid: Int?
     var log = ProcessInfo.processInfo.environment["T26_LOG"] ?? "/tmp/t26hook.log"
     var json = false
@@ -44,6 +45,7 @@ struct Options {
     var ignoreSIP = false
     var noSudo = false
     var verbose = false
+    var agentAction = "status"
     var lines: Int?
     var follow = false
     var all = false
@@ -66,6 +68,11 @@ func parseArguments(_ arguments: [String]) throws -> Options {
         }
     } else if let first = rest.first, !first.hasPrefix("-") {
         throw UsageError(message: "unknown command '\(first)' — run `t26 help`")
+    }
+
+    if options.command == .agent, let action = rest.first, !action.hasPrefix("-") {
+        options.agentAction = action
+        rest = rest.dropFirst()
     }
 
     var index = 0
@@ -109,6 +116,8 @@ func parseArguments(_ arguments: [String]) throws -> Options {
             options.settleMin = try number(arg)
         case "--settle-max":
             options.settleMax = try number(arg)
+        case "--guard":
+            options.guardSeconds = try number(arg)
         case "--pid":
             options.pid = try number(arg)
         case "--log":
@@ -153,7 +162,7 @@ func parseArguments(_ arguments: [String]) throws -> Options {
 let usageText = """
 t26 \(t26Version) — a transparent menu bar for macOS
 
-Removes the Liquid Glass backdrop from the menu bar inside WindowServer. Text,
+Removes the menu bar's backdrop layer inside WindowServer. Text,
 icons, status items, pills and the shadow are left exactly where they were: only
 the backdrop layer is emptied out. Nothing is loaded into WindowServer and
 nothing is written outside /tmp, so logging out or rebooting undoes everything.
@@ -169,6 +178,8 @@ USAGE
        t26 doctor                  check the prerequisites
        t26 logs [-n N] [-f|--all]  read the hook log
   sudo t26 abort                   emergency: hand WindowServer back
+  sudo t26 agent install           keep it repaired across unlocks / display changes
+       t26 agent status | uninstall
        t26 version | help [cmd]
 
 OPTIONS
@@ -177,6 +188,8 @@ OPTIONS
       --shallow       only hide the backdrop (no opacity/contents/filters)
       --settle-min N  earliest detach, seconds (default 4)
       --settle-max N  stop waiting for every display to report (default 60)
+      --guard N       stay attached until the bar is quiet for N seconds, so a
+                      repair survives the rebuild burst after an unlock/wake
       --pid N         operate on another process (for testing; no sudo needed)
       --strict        exit 3 unless every attached display was confirmed
       --json          machine-readable output (settle, fix, status, doctor)

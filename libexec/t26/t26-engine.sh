@@ -7,7 +7,7 @@
 # SkyLight`resize_one_pill (its CALayer argument sits inside the live menu bar
 # layer tree), climbs to the bar's root and neutralises every child whose name
 # contains "MenuBarBackdrop". The backdrop is a *sibling* of the text / icon /
-# shadow / pill layers, so only the Liquid Glass disappears: nothing is loaded
+# shadow / pill layers, so only the backdrop disappears: nothing is loaded
 # into WindowServer and nothing is written to disk. The change dies with the
 # next WindowServer restart (log out / reboot).
 #

@@ -60,6 +60,8 @@ t26 doctor            preflight: what is missing and how to fix it, exit 3 when 
 t26 logs [-n N] [-f]  read the hook log; -f follows it
 t26 abort             escape hatch: hand WindowServer back (writes detach into the control pipe)
 
+sudo t26 agent install  repair again automatically after unlock / display / wallpaper changes
+sudo t26 agent status   is the watcher installed and running
 sudo t26 fix -s 600   debugging: stay attached, repair every rebuild (costs frames)
 sudo t26 tree         dump the live menu bar CALayer tree, change nothing
 sudo t26 probe        read-only: print the layer names WindowServer assigns
@@ -75,6 +77,7 @@ Common options:
     --shallow       only hide, do not clear opacity/contents/filters
     --settle-min N  earliest detach, seconds (default 4)
     --settle-max N  how long to wait for displays to confirm, seconds (default 60)
+    --guard N       keep the breakpoints until the bar has been quiet for N seconds
     --strict        exit 3 unless every display confirmed (good for scripts)
     --json          machine-readable output for settle/fix/status/doctor
     --pid N         operate on another process (testing; needs no sudo)
@@ -101,6 +104,23 @@ every rebuild, and each display rebuilds on its own, so the one that was repaire
 first can be painted frosted again after you detach. That makes "every display
 confirmed" a hard condition; if `--settle-max` runs out first, the run warns and
 ends (that display may still be frosted — give it more time and run again).
+
+### The fix can come back — that is what the agent is for
+
+The repair is written into live `CALayer` objects. On some displays WindowServer
+throws the whole bar tree away and builds a new one: that is what happens when an
+external display sleeps and wakes, when the display configuration changes, or
+when the wallpaper changes (the material is generated again with the new bezel
+tint). `settle` cannot outlive that, because the objects it touched are gone.
+
+`--guard N` covers the burst: after the first repair the breakpoints stay armed
+until the bar has been quiet for N seconds, so a repair that is immediately
+followed by more rebuilds still wins, and then it detaches.
+
+`t26 agent install` turns that into a daemon: it watches for screen unlock,
+display configuration changes and wallpaper changes, waits two seconds, runs
+`t26 settle --guard 8`, and goes back to sleep. It never holds the debugger while
+idle and never runs two settles at once. `sudo t26 agent uninstall` removes it.
 
 ### Do not press Ctrl-C
 
@@ -135,6 +155,7 @@ Sources/t26/            the CLI (swiftc, no Xcode dependency)
   Style.swift           colours, two-column report, exit codes
 libexec/t26/
   t26-engine.sh         lldb controller: attach / breakpoints / wait for done / detach
+  t26-agent             launchd watcher: unlock / display / wallpaper → settle --guard
   ws_hook.py            lldb Python callbacks: single-expression repair, tree walk, settle verdict
 tools/
   ws-symbols.sh         runtime symbol probe (read-only)
@@ -158,6 +179,9 @@ docs/                   reverse-engineering notes (mechanics / addresses and pit
   both displays stay transparent after the debugger detaches.
 - The target look is macOS 26's transparent status bar: no glass, the desktop
   shows straight through.
+- The repair lives in WindowServer's memory, so it does not survive a reboot, a
+  logout, or a rebuild of the bar itself (external display waking up, wallpaper
+  change). `t26 agent install` covers the last two.
 - The only thing likely to change between macOS versions is the layer name: run
   `sudo t26 tree` to see the real tree and change `--pattern` if needed;
   `t26 doctor` checks the prerequisites first.

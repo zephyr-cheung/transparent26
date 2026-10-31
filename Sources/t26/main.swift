@@ -41,6 +41,10 @@ case .doctor:
 case .logs:
     commandLogs(options, layout: layout)
 
+case .agent:
+    guard let layout else { die(Layout.missingMessage(), .blocked) }
+    commandAgent(options, layout: layout)
+
 case .abort:
     guard let layout else { die(Layout.missingMessage(), .blocked) }
     commandAbort(options, layout: layout)

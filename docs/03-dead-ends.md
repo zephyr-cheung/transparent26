@@ -86,7 +86,37 @@ against the real WindowServer: zero hits in 25 seconds. Dropped.
 - numeric ids drift as soon as one symbol resolves to several locations; use
   `-N` named breakpoints.
 
-## 8. Is `hidden` alone enough? — No
+## 8. A durable switch that needs no debugger — there is none
+
+The obvious wish is a preference or an API that makes WindowServer build the bar
+without a backdrop, so that nothing has to be repaired ever again.
+
+- `SLSSetMenuBar*` exist (the strings are there: `SLSSetMenuBar: Invalid
+  kCGMenuBarFilterKey`, `SLSSetMenuBarDrawingStyle: error setting connection
+  property`, `GetActiveMenuBarDrawingStyle`, `SetMenuBarDrawingStyle`) but are
+  **not exported**: `nm` on SkyLight shows only `SLSGetDisplayMenubarHeight`,
+  `SLSTransactionSystemStatusBarSetLayoutIndex` and
+  `SLSTransactionSystemStatusBarResetLayout` for the menu bar. Being able to call
+  them still means calling them *from inside* WindowServer, i.e. attach a
+  debugger.
+- `kSLSMenuBarReduceTransparency` does exist and does remove the translucency —
+  by making the bar **opaque**, which is the opposite of what this project wants.
+- the drawing style / filter keys are connection or transaction scoped and the
+  setters write into the bar's settings, not into a user default that could be
+  written once and forgotten;
+- patching the code instead of the objects is blocked twice over: SkyLight lives
+  in the dyld shared cache (text pages are not writable) and AMFI rejects
+  anything that is not a platform binary, exactly as with the dylib attempt.
+- the layer-name strings (`SLMenuBarBackdropLayer`, ...) have **no static xref**
+  in the extracted image either — a scan for `adrp`+`add` pairs to their page
+  finds only the neighbouring strings, and there is no chained-fixups table left
+  in the extracted binary. So "hook the code that names the layer" is not
+  reachable statically, only at runtime.
+
+Conclusion: the only durable lever is to re-apply the repair after the event,
+which is what `--guard` and `t26 agent` do.
+
+## 9. Is `hidden` alone enough? — No
 
 In `fix` mode every pass logs `neutralised 1 layer(s) ... (already hidden: 0)`,
 which shows WindowServer sets `hidden` back to `NO` on every rebuild. That is why

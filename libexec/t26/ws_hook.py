@@ -11,7 +11,7 @@ How it works: the live menu bar CALayer tree is reached from SkyLight's own
 expression climbs to the bar's root, then for every child (and grandchild)
 whose name contains T26_PATTERN it sets hidden / opacity 0 / contents nil /
 filters nil. The backdrop is a sibling of the text, icon, pill and shadow
-layers, so only the Liquid Glass disappears.
+layers, so only the backdrop disappears.
 
 Why "deep": WindowServer resets `hidden` on every rebuild (log: "already
 hidden: 0" on each pass) but does not restore opacity/contents/filters. That
@@ -55,6 +55,11 @@ MAXHITS = int(os.environ.get("T26_MAXHITS", "4000"))
 # settle gives up waiting for a confirmed-everywhere fix after this many seconds
 SETTLE_MAX = float(os.environ.get("T26_SETTLE_MAX", "60"))
 SETTLE_MIN = float(os.environ.get("T26_SETTLE_MIN", "4"))
+# settle normally lets go as soon as every display is confirmed. With a guard
+# it keeps the breakpoints armed until the bar has been quiet for this many
+# seconds, which is what makes a repair survive the burst of rebuilds that
+# follows an unlock or a display waking up.
+GUARD = float(os.environ.get("T26_GUARD", "0"))
 
 NAME_ATTR = 0x17c  # attribute id used by -[CALayer setName:]
 
@@ -733,6 +738,29 @@ def _fix_pass(frame, ptr, deep=False):
     return raw // 1000, ms, raw % 1000
 
 
+def _guard_watch():
+    """Let go once the bar has been quiet for GUARD seconds.
+
+    The settle verdict can normally only be evaluated inside a breakpoint
+    callback, i.e. when the bar *is* being rebuilt. After an unlock burst the
+    rebuilds stop and nothing would ever evaluate it again, so a guard run needs
+    its own clock. This thread only writes the verdict; the detach itself is the
+    shell's job (FIFO), because lldb.debugger is not usable off-thread.
+    """
+    while not S.done:
+        time.sleep(0.5)
+        try:
+            if S.passes and (time.time() - S.last_pass) >= GUARD:
+                S.settled = True
+                log("settle: guard — no rebuild for %.0fs after %d pass(es), "
+                    "%d layer(s) hidden; dropping the breakpoints"
+                    % (time.time() - S.last_pass, S.passes, S.fixed))
+                _done("settled (guard)")
+                return
+        except Exception:
+            return
+
+
 def on_resize_pill(frame, bp_loc, internal_dict):
     try:
         return _on_resize_pill(frame)
@@ -803,13 +831,17 @@ def _on_resize_pill(frame):
         every_display = (len(S.roots) >= max(1, len(S.displays))
                          and min(S.roots.values()) >= 2)
         too_long = age >= SETTLE_MAX
+        quiet = GUARD <= 0 or S.passes == 0 or (
+            time.time() - S.last_pass) >= GUARD
         if (MODE == "settle" and not S.settled and age >= SETTLE_MIN
-                and (every_display or too_long)):
+                and (every_display or too_long) and quiet):
             S.settled = True
             log("settle: %d layer(s) hidden over %d pass(es), %d/%d display(s) "
-                "confirmed; dropping the breakpoints so WindowServer runs at "
+                "confirmed%s; dropping the breakpoints so WindowServer runs at "
                 "full speed again"
-                % (S.fixed, S.passes, len(S.roots), max(1, len(S.displays))))
+                % (S.fixed, S.passes, len(S.roots), max(1, len(S.displays)),
+                   "" if GUARD <= 0 else
+                   ", %.0fs quiet" % (time.time() - S.last_pass)))
             if not every_display:
                 log("settle: WARNING only %d/%d display(s) ever got repaired "
                     "(waited %.0fs) — that bar may come back frosted; rerun "
@@ -885,5 +917,12 @@ def _strip_glass(frame, proc, obj, text, kind):
         log("could not neutralise '%s' (%s) at %#x" % (text, kind, obj))
 
 
-log("--- ws_hook loaded (mode %s, pattern '%s', maxfix %d, maxhits %d) ---"
-    % (MODE, PATTERN, MAXFIX, MAXHITS))
+log("--- ws_hook loaded (mode %s, pattern '%s', maxfix %d, maxhits %d%s) ---"
+    % (MODE, PATTERN, MAXFIX, MAXHITS,
+       "" if GUARD <= 0 else ", guard %ds" % GUARD))
+
+if MODE == "settle" and GUARD > 0:
+    import threading
+    _t = threading.Thread(target=_guard_watch)
+    _t.daemon = True
+    _t.start()

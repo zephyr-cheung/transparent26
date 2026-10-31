@@ -33,11 +33,12 @@ func ensureRoot(_ options: Options) {
     if Host.isRoot { return }
     if options.pid != nil { return }
     if options.noSudo {
-        die("this command debugs WindowServer and needs root: run it with sudo", .blocked)
+        die("this command needs root: run it with sudo", .blocked)
     }
 
     let exe = Host.executablePath()
-    let passthrough = ["T26_LIBEXEC", "T26_ENGINE", "T26_HOOK", "T26_LOG", "T26_PID", "T26_PATTERN"]
+    let passthrough = ["T26_LIBEXEC", "T26_ENGINE", "T26_HOOK", "T26_AGENT",
+                       "T26_LOG", "T26_PID", "T26_PATTERN"]
         .compactMap { key -> String? in
             guard let value = ProcessInfo.processInfo.environment[key] else { return nil }
             return "\(key)=\(value)"
@@ -94,9 +95,12 @@ func runEngineCommand(_ options: Options, layout: Layout) -> Never {
         out(row("target", target))
         if options.command.modifiesWindowServer {
             out(row("pattern", options.pattern ?? "MenuBarBackdrop"))
-            let budget = mode == "settle"
+            var budget = mode == "settle"
                 ? "\(seconds)s · detach from ≥\(options.settleMin ?? 4)s to ≤\(options.settleMax ?? 60)s"
                 : "\(seconds)s · the debugger stays attached"
+            if mode == "settle", let guardSeconds = options.guardSeconds {
+                budget += " · guard \(guardSeconds)s of quiet"
+            }
             out(row("budget", budget))
         }
         out(row("log", options.log))
@@ -110,6 +114,7 @@ func runEngineCommand(_ options: Options, layout: Layout) -> Never {
         deep: options.deep,
         settleMin: options.settleMin,
         settleMax: options.settleMax,
+        guardSeconds: options.guardSeconds,
         log: options.log,
         pid: options.pid
     )
@@ -534,4 +539,114 @@ func commandAbort(_ options: Options, layout: Layout?) -> Never {
 func commandVersion() -> Never {
     out("t26 \(t26Version)")
     exit(ExitCode.ok.rawValue)
+}
+
+// --- agent ---------------------------------------------------------------
+
+let agentLabel = "local.t26.agent"
+let agentPlist = "/Library/LaunchDaemons/\(agentLabel).plist"
+
+func agentPlistBody(agent: String, t26: String, guardSeconds: Int) -> String {
+    """
+    <?xml version="1.0" encoding="UTF-8"?>
+    <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+    <plist version="1.0">
+    <dict>
+        <key>Label</key><string>\(agentLabel)</string>
+        <key>ProgramArguments</key>
+        <array>
+            <string>\(agent)</string>
+            <string>--t26</string><string>\(t26)</string>
+            <string>--guard</string><string>\(guardSeconds)</string>
+        </array>
+        <key>RunAtLoad</key><true/>
+        <key>KeepAlive</key><true/>
+        <key>ProcessType</key><string>Background</string>
+        <key>StandardOutPath</key><string>/tmp/t26-agent.log</string>
+        <key>StandardErrorPath</key><string>/tmp/t26-agent.log</string>
+    </dict>
+    </plist>
+
+    """
+}
+
+func commandAgent(_ options: Options, layout: Layout) -> Never {
+    let action = options.agentAction
+    let guardSeconds = options.guardSeconds ?? 8
+
+    switch action {
+    case "status":
+        let installed = FileManager.default.fileExists(atPath: agentPlist)
+        let print = Shell.run(["/bin/launchctl", "print", "system/\(agentLabel)"])
+        let running = print.output.contains("state = running")
+        let pidLine = print.output.split(separator: "\n")
+            .first { $0.contains("pid = ") }?
+            .trimmingCharacters(in: .whitespaces) ?? ""
+
+        if options.json {
+            printJSON([
+                "installed": installed,
+                "running": running,
+                "pid": pidLine.replacingOccurrences(of: "pid = ", with: ""),
+                "plist": agentPlist,
+                "agent": layout.agent ?? "",
+                "log": "/tmp/t26-agent.log",
+            ])
+            exit(ExitCode.ok.rawValue)
+        }
+        out(Style.bold("t26 \(t26Version)") + Style.dim(" · agent"))
+        out(row("installed", installed ? ok(agentPlist) : warn("no — sudo t26 agent install")))
+        out(row("running", running ? ok(pidLine) : warn("no")))
+        out(row("binary", layout.agent.map(ok) ?? warn("missing — sudo make install")))
+        out(row("log", "/tmp/t26-agent.log"))
+        out()
+        if installed && running {
+            out(Style.dim("  repairs again after an unlock, a display change or a wallpaper change."))
+        }
+        exit(ExitCode.ok.rawValue)
+
+    case "install":
+        ensureRoot(options)
+        guard let agent = layout.agent, FileManager.default.isExecutableFile(atPath: agent) else {
+            die("the agent binary is missing: install first with `sudo make install`", .blocked)
+        }
+        let t26 = Host.executablePath()
+        do {
+            try agentPlistBody(agent: agent, t26: t26, guardSeconds: guardSeconds)
+                .write(toFile: agentPlist, atomically: true, encoding: .utf8)
+        } catch {
+            die("cannot write \(agentPlist): \(error.localizedDescription)", .failed)
+        }
+        _ = Shell.run(["/bin/launchctl", "bootout", "system/\(agentLabel)"])
+        let boot = Shell.run(["/bin/launchctl", "bootstrap", "system", agentPlist])
+        if boot.status != 0 {
+            die("launchctl bootstrap failed: \(boot.output.trimmingCharacters(in: .whitespacesAndNewlines))", .failed)
+        }
+        out(ok("agent installed — repairs again after unlock / display change / wallpaper change"))
+        out(row("watch", "unlock · display configuration · wallpaper store"))
+        out(row("command", "\(t26) settle --guard \(guardSeconds)"))
+        out(row("log", "/tmp/t26-agent.log"))
+        out(row("remove", "sudo t26 agent uninstall"))
+        exit(ExitCode.ok.rawValue)
+
+    case "uninstall":
+        ensureRoot(options)
+        _ = Shell.run(["/bin/launchctl", "bootout", "system/\(agentLabel)"])
+        try? FileManager.default.removeItem(atPath: agentPlist)
+        try? FileManager.default.removeItem(atPath: "/tmp/t26-agent.lock")
+        out(ok("agent removed — nothing runs in the background any more"))
+        exit(ExitCode.ok.rawValue)
+
+    case "run":
+        guard let agent = layout.agent else {
+            die("the agent binary is missing: install first with `sudo make install`", .blocked)
+        }
+        var argv = [agent, "--t26", Host.executablePath(), "--guard", "\(guardSeconds)"]
+        if Host.isRoot == false { argv.insert("sudo", at: 0) }
+        let status = Spawn.wait(argv, env: ProcessInfo.processInfo.environment)
+        exit(status == 0 ? ExitCode.ok.rawValue : ExitCode.failed.rawValue)
+
+    default:
+        die("unknown agent action '\(action)' — install, uninstall, status or run", .usage)
+    }
 }

@@ -131,6 +131,31 @@ Environment: `T26_MODE` `T26_PATTERN` (default `MenuBarBackdrop`) `T26_MAXFIX`
 (default 4s, earliest detach) `T26_SETTLE_MAX` (default 60s; give up waiting for
 every display to confirm and warn) `T26_TREECAP` `T26_LOG` `T26_PID`.
 
+## Why the fix can disappear again
+
+The repair is written into live `CALayer` objects, so it lives exactly as long as
+those objects do. Two different things can take it away:
+
+- **a rebuild of the bar** (front app changes, focus, full screen): WindowServer
+  resets `hidden` only — `opacity=0` / `contents=nil` / `filters=nil` survive, so
+  the bar stays transparent. This is the case `settle` was designed around.
+- **a new bar tree**: an external display that sleeps and wakes, a display
+  configuration change, or a wallpaper change (the material is regenerated with
+  the new bezel tint) can produce fresh layers. Nothing survives that, because
+  the objects the repair touched no longer exist. Verified with `t26 tree`: on a
+  built-in display the backdrop kept the same pointer and `op=0.00` across a
+  wallpaper change (only the enhancement child's compositing filter was
+  rewritten, `darken` → `lighten`), while the external display came back with a
+  different root and backdrop pointer holding `contents` again.
+
+Two answers, both shipped:
+
+- `t26 settle --guard N` — keep the breakpoints armed until the bar has been
+  quiet for N seconds, so the repair survives the burst of rebuilds that follows
+  an unlock or a wake, then detach.
+- `t26 agent install` — a launchd watcher that notices unlock / display /
+  wallpaper changes and runs `settle --guard 8` for you.
+
 ## Undo
 
 Nothing persistent to clean up:

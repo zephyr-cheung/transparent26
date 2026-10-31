@@ -7,6 +7,7 @@ struct EngineRequest {
     var deep: Bool
     var settleMin: Int?
     var settleMax: Int?
+    var guardSeconds: Int?
     var log: String
     var pid: Int?
 }
@@ -34,6 +35,7 @@ enum Engine {
         if let pattern = request.pattern { env["T26_PATTERN"] = pattern }
         if let value = request.settleMin { env["T26_SETTLE_MIN"] = "\(value)" }
         if let value = request.settleMax { env["T26_SETTLE_MAX"] = "\(value)" }
+        if let value = request.guardSeconds { env["T26_GUARD"] = "\(value)" }
         if let pid = request.pid { env["T26_PID"] = "\(pid)" }
 
         var tail = LogTail(path: request.log)
