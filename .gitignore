@@ -1,0 +1,7 @@
+bin/
+build/
+.build/
+*.o
+*.dylib
+__pycache__/
+.DS_Store
