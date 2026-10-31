@@ -1,19 +1,20 @@
-# 01 · 它是怎么工作的
+# 01 · How it works
 
-目标：让 macOS 26 (Tahoe) 的菜单栏**去掉 Liquid Glass 背板**，但文字、图标、
-时钟、状态项、pill、苹果 logo、阴影全部保留。上一版用
-`SLSSetMenuBarSystemOverrideAlpha(alpha=0)` 把整个 bar 一起淡出，菜单项直接
-消失，所以那条路被否掉了（见 [03-dead-ends](03-dead-ends.md)）。
+The goal: take the **Liquid Glass backdrop** off the menu bar while keeping text,
+icons, clock, status items, pills, the Apple logo and the shadow. The first
+attempt used `SLSSetMenuBarSystemOverrideAlpha(alpha=0)`, which fades the whole
+bar out — menu items included — so that route was rejected (see
+[03-dead-ends](03-dead-ends.md)).
 
-## 结论先行
+## The short version
 
-菜单栏的玻璃是一层 **`CALayer`，名字里带 `MenuBarBackdrop`**，而且它是
-文字层/图标层/阴影层/pill 层的**兄弟节点**，不是父亲。所以只要把这一层做掉，
-玻璃消失，其它一切不动。
+The glass is **one `CALayer` whose name contains `MenuBarBackdrop`**, and it is a
+**sibling** of the text / icon / shadow / pill layers, not their parent. Neutralise
+that one layer and the glass is gone while everything else stays.
 
 ```
-root                                   (SLMenuBarOnScreenRootLayer，无名字)
-├─ SLMenuBarBackdropLayer              ← 玻璃本体（要干掉的就是它）
+root                                   (SLMenuBarOnScreenRootLayer, unnamed)
+├─ SLMenuBarBackdropLayer              ← the glass itself (the one to remove)
 │    └─ SLMenuBarEnhancementLayer       cf=darkenBlendMode
 ├─ SLMenuBarAXBackstopLayer   hidden
 ├─ SLMenuBarFSBackstopLayer   hidden
@@ -27,112 +28,123 @@ root                                   (SLMenuBarOnScreenRootLayer，无名字)
      └─ SLMenuBarShadowLayer    fl=(gaussianBlur) cf=vibrantLightSourceOver
 ```
 
-这份 dump 是 `sudo t26 tree` 在真实 WindowServer 上跑出来
-的，不是猜的。
+That dump comes from `sudo t26 tree` against the real WindowServer; it is not a
+guess.
 
-## 为什么不能注入 dylib
+## Why a dylib cannot be injected
 
-WindowServer 是 platform binary，AMFI 会拒绝 map 任何非 Apple 的 image，
-和 SIP 开关无关：
+WindowServer is a platform binary, and AMFI refuses to map any non-Apple image
+into it, regardless of SIP:
 
 ```
 dlopen(...): code signature ... not valid for use in process:
 mapping process is a platform binary, but mapped file is not
 ```
 
-但**调试是允许的**：lldb 可以停住进程、读参数、跑表达式、调用真实函数。
-所以整个方案是「断点 + 表达式手术」，一行代码也没有被 load 进去。
+**Debugging, however, is allowed**: lldb may stop the process, read arguments,
+run expressions and call real functions. So the whole approach is "breakpoints
+plus an expression": not a single line of code is loaded into the process.
 
-## 唯一的入口：`resize_one_pill`
+## The only entry point: `resize_one_pill`
 
-`update_menu_bar_layers()` 每次重建菜单栏都会调用
-`resize_one_pill(...)`，它的第二个参数（arm64 的 `x2`）就是一个活的
-`CALayer`，位于真实菜单栏层树里。
+Every menu bar rebuild ends in `update_menu_bar_layers()`, which calls
+`resize_one_pill(...)`. Its third argument (whatever lives in arm64 `x2`) is a
+live `CALayer` that sits inside the real menu bar layer tree.
 
-流程（全在一条 lldb 表达式里完成，见下）：
+The flow (all of it inside one lldb expression, see below):
 
-1. 从 `x2` 往上爬最多 6 层 `superlayer`，拿到 bar 的 root；
-2. 扫 root 的子层（以及再下一层），对 `[name containsString:@"MenuBarBackdrop"]`
-   的层：
+1. climb at most 6 `superlayer`s from `x2` to reach the bar's root;
+2. walk the root's children (and one level below) and, for every layer whose
+   name matches `[name containsString:@"MenuBarBackdrop"]`:
    - `setHidden:YES`
    - `setOpacity:0.0`
    - `setContents:nil`
    - `setFilters:nil`
    - `setBackgroundFilters:nil`
-   - 以及**它的子层**（`SLMenuBarEnhancementLayer`，`cf=darkenBlendMode`）同样
-     藏掉、清空——某些显示器上，父层空了之后仍然是这个子层在画那层玻璃
-3. 返回 `新藏掉的层数 * 1000 + 本来就已经藏着的层数`。
+   - plus the same treatment for **its child** (`SLMenuBarEnhancementLayer`,
+     `cf=darkenBlendMode`) — on some displays that sublayer still paints the glass
+     after the parent has been emptied
+3. return `newly hidden * 1000 + already hidden`.
 
-名字不匹配的层（文字、logo、阴影、pill）一个字节都不碰。
+Layers whose names do not match (text, logo, shadow, pill) are not touched at
+all.
 
-## 为什么要「深度」中和
+## Why the neutralisation has to be "deep"
 
-日志证据：每个 pass 都是 `already hidden: 0`，也就是 **WindowServer 每次重建
-都会把 `hidden` 重新设回 `NO`**（同一个 layer 指针 `0x600001b33080` 被反复
-藏）。只设 `hidden` 的话，一停断点玻璃就回来了。
+The log evidence: every pass reports `already hidden: 0`, i.e. **WindowServer sets
+`hidden` back to `NO` on every rebuild** (the same layer pointer `0x600001b33080`
+is hidden over and over). With `hidden` alone, the glass comes back as soon as
+the breakpoint is dropped.
 
-但 `opacity=0` / `contents=nil` / `filters=nil` 它不会复位。所以：
+But it does *not* reset `opacity=0` / `contents=nil` / `filters=nil`. So:
 
-- `hidden` 被复位也没关系，层已经没有内容、没有滤镜、完全透明，画不出东西；
-- 于是修好之后可以**把断点全部 disable、让调试器退出**，WindowServer 全速跑，
-  菜单栏依然是透明的。
+- `hidden` being reset does not matter: the layer has no content, no filters and
+  is fully transparent, so there is nothing to draw;
+- therefore the repair can **disable every breakpoint and let the debugger
+  exit**, leaving WindowServer at full speed while the bar stays transparent.
 
-这就是 `settle` 模式，也是目前验证过「不卡 + 一直透明」的用法。
+That is `settle`, and it is the mode that has been verified to be "no stutter and
+stays transparent".
 
-注意一个坑（双屏踩到的）：`settle` 曾经在「4 个 pass + 3 秒」之后就撒手，结果
-第二块屏的 bar 只被修过**一次**就没人管了，重建之后又变成磨砂。现在 `settle`
-的退出条件是「**WindowServer 报告过的每一块显示器的 root 都至少被修过两次**」，
-或者等满 `T26_SETTLE_MAX`（默认 60s）后带警告退出。改完之后双屏实测
-`2/2 display(s) confirmed`，撒手后两块屏都稳定透明。
+One pitfall, learned the hard way with two displays: `settle` used to let go
+after "4 passes and 3 seconds", which left the second display's bar repaired
+**once** with nobody watching it, and it came back frosted after the rebuild. The
+exit condition is now "**every display root WindowServer has reported was
+repaired at least twice**", or `T26_SETTLE_MAX` (60s by default) with a warning.
+After that change the two-display test reports `2/2 display(s) confirmed` and both
+displays stay transparent once detached.
 
-## 用法
+## Usage
 
 ```sh
-make && sudo make install   # 只需一次
+make && sudo make install   # once
 
-sudo t26 settle             # 修好就撒手（推荐）
-sudo t26 fix -s 600         # 一直挂着断点（调试用，会掉帧）
-sudo t26 tree               # 看一眼真实层树
-t26 status                  # 上次跑了什么、成没成
+sudo t26 settle             # repair, then let go (recommended)
+sudo t26 fix -s 600         # stay attached (debugging, costs frames)
+sudo t26 tree               # look at the real layer tree
+t26 status                  # what the last run did, and whether it worked
 ```
 
-`settle` 会先挂断点做几个 pass（这几秒会卡，正常），然后
-`breakpoint disable`，脚本 detach 退出。之后零开销。
+`settle` arms the breakpoints and runs a few passes (these seconds stutter, that
+is expected), then runs `breakpoint disable` and the script detaches. Zero
+overhead from then on.
 
-模式：
+Modes:
 
-| 模式 | 作用 |
+| Mode | What it does |
 | --- | --- |
-| `settle` | 中和 + 丢掉断点，之后无调试器（默认推荐） |
-| `fix` | 常挂断点，每次重建补一刀（回退方案） |
-| `tree` | 打印活的菜单栏层树，不改任何东西 |
-| `probe` / `hunt` / `theme` | 纯诊断，详见 [02](02-reverse-engineering.md) |
+| `settle` | neutralise, then drop the breakpoints — no debugger left (recommended) |
+| `fix` | stay attached, repair every rebuild (fallback) |
+| `tree` | print the live menu bar layer tree, change nothing |
+| `probe` / `hunt` / `theme` | diagnostics only, see [02](02-reverse-engineering.md) |
 
-CLI 是唯一入口：`-s/--seconds`、`--pattern`、`--shallow`、`--settle-min`、
-`--settle-max`、`--pid`、`--log` 会被翻译成下面这些引擎环境变量（手工调引擎时
-也可以直接设）。
+The CLI is the only supported front end: `-s/--seconds`, `--pattern`,
+`--shallow`, `--settle-min`, `--settle-max`, `--pid` and `--log` are translated
+into the engine environment below (you can also set those by hand when driving
+the engine directly).
 
-环境变量：`T26_MODE` `T26_PATTERN`（默认 `MenuBarBackdrop`）`T26_MAXFIX`
-（`fix` 下默认 0 = 不停）`T26_MAXHITS`（`fix/settle` 默认 1000000）
-`T26_DEEP`（默认 1，可关掉深度中和）`T26_SETTLE_MIN`（默认 4s，最早撒手时间）
-`T26_SETTLE_MAX`（默认 60s，等不到「每块屏都确认」就带警告撒手）
-`T26_TREECAP` `T26_LOG` `T26_PID`。
+Environment: `T26_MODE` `T26_PATTERN` (default `MenuBarBackdrop`) `T26_MAXFIX`
+(0 = never stop, the default in `fix`) `T26_MAXHITS` (1000000 in `fix/settle`)
+`T26_DEEP` (1 by default; turns deep neutralisation off) `T26_SETTLE_MIN`
+(default 4s, earliest detach) `T26_SETTLE_MAX` (default 60s; give up waiting for
+every display to confirm and warn) `T26_TREECAP` `T26_LOG` `T26_PID`.
 
-## 撤销
+## Undo
 
-不需要任何持久化清理：
+Nothing persistent to clean up:
 
-- `settle` 之后想恢复：注销 / 重启（WindowServer 重启，一切复原）；
-- 或者直接再跑一次 `sudo t26 fix -s 5` 后手动把层
-  `setHidden:NO`……没必要，重启最干净。
+- to undo after `settle`: log out / reboot (WindowServer restarts and everything
+  is back);
+- or run `sudo t26 fix -s 5` and set the layer back with `setHidden:NO` by hand —
+  not worth it, a reboot is cleaner.
 
-磁盘上只多了 `/tmp/*.log`。
+The only files touched are `/tmp/*.log`.
 
-## 安全红线
+## Safety rules
 
-挂上 lldb 的时候 WindowServer 是**被 ptrace 停住**的。**绝对不要 Ctrl-C 这个
-脚本**：SIGINT 会让 batch lldb 直接 **kill 目标**，而目标是 WindowServer。
-要中止只能另开一个终端：
+While lldb is attached, WindowServer is **stopped under ptrace**. **Never Ctrl-C
+this process**: SIGINT makes a batch lldb **kill its target**, and the target is
+WindowServer. To abort, open another terminal:
 
 ```sh
 sudo sh -c 'echo "process interrupt" > /tmp/t26-ctl'

@@ -1,39 +1,41 @@
-# 04 · 为什么会卡，以及怎么把卡顿干掉
+# 04 · Why it stutters, and how the stutter was removed
 
-用户症状：修好之后整体「特别卡」，尤其**切窗口（焦点变化）**的时候。
+Reported symptom: after the repair the machine felt "really laggy", especially
+when **switching windows (focus changes)**.
 
-## 卡顿的真正来源：ptrace 停进程，不是表达式慢
+## The real cause: ptrace stops the process, not a slow expression
 
-lldb 挂断点时停住的是**整个 WindowServer**（上百个线程：合成、渲染、
-display link、事件分发）。每一次命中 = 停 → 跑 Python 回调 → 跑表达式 →
-恢复，中间 CoreAnimation 的提交和 vsync 全部被推到后面。表达式快不快是次要的，
-**暂停次数**才是主要成本。
+A breakpoint stops **the whole of WindowServer** (hundreds of threads:
+compositing, rendering, the display link, event dispatch). Every hit means: stop
+→ run the Python callback → run the expression → resume, and CoreAnimation's
+commits and vsync are pushed back in between. How fast the expression is matters
+little; **the number of stops** is what costs.
 
-实测一次菜单栏重建的断点命中数（来自 `/tmp/t26hook.log`）：
+Measured breakpoint hits per rebuild (from `/tmp/t26hook.log`):
 
 ```
-settle 那次：14 hits / 4 fix pass(es)   → 3.5 次/重建
-fix    那次：22 hits / 6 fix pass(es)   → 3.7 次/重建
+settle run: 14 hits / 4 fix pass(es)   → 3.5 per rebuild
+fix    run: 22 hits / 6 fix pass(es)   → 3.7 per rebuild
 ```
 
-一次重建固定 1×`update_menu_bar_layers` + 3×`resize_one_pill`（每条 pill 一次，
-两个显示器会更多）。焦点切换必然重建菜单栏（激活态、每个 App 的菜单都变），
-所以切窗口时最卡。
+A rebuild always costs 1×`update_menu_bar_layers` + 3×`resize_one_pill` (one per
+pill, more with two displays). Switching focus always rebuilds the bar (the
+active state and every app's menus change), which is why that is the worst case.
 
-## 测量记录
+## Measurements
 
-在 dummy（root 层是 `SLMenuBarOnScreenRootLayer`、挂 Backdrop+Text 两个子层）
-上量的，同一套真代码路径：
+Taken on a dummy target (root layer `SLMenuBarOnScreenRootLayer` with Backdrop +
+Text children) through the same code path:
 
-| 做法 | 每次重建耗时 |
+| Approach | Time per rebuild |
 | --- | --- |
-| 老的多次求值 walker（`_neutralize_tree`，逐层 eval） | **174 ms** |
-| 单条大表达式（浅层：只 `setHidden`） | **10–11 ms** |
-| 单条大表达式（deep：再加 4 个 setter） | **11–13 ms** |
-| 真实 WindowServer 第一次 pass（lldb JIT 编译） | **256–268 ms** |
-| 真实 WindowServer 之后每次 pass | **14–31 ms** |
+| old multi-eval walker (`_neutralize_tree`, one eval per layer) | **174 ms** |
+| one large expression (shallow: `setHidden` only) | **10–11 ms** |
+| one large expression (deep: four more setters) | **11–13 ms** |
+| real WindowServer, first pass (lldb JITs the expression) | **256–268 ms** |
+| real WindowServer, every later pass | **14–31 ms** |
 
-`/tmp/t26hook.log` 里真实数据：
+Real numbers from `/tmp/t26hook.log`:
 
 ```
 fix pass 1: neutralised 1 layer(s) under 0x600001b33080 in 256 ms
@@ -41,53 +43,64 @@ fix pass 2: neutralised 1 layer(s) under 0x600001bf3540 in 31 ms
 fix pass 3: neutralised 1 layer(s) under 0x600001b33080 in 18 ms
 ```
 
-第一刀特别慢是因为 lldb 要把表达式 JIT 编译进目标进程。
+The first cut is far slower because lldb has to JIT-compile the expression into
+the target process.
 
-## 做过的优化
+## Optimisations that were made
 
-1. **把整个修复压成一条表达式**（`_fix_expr()`）：爬 root、扫两层、匹配名字、
-   五个 setter、返回计数，全部一次 `EvaluateExpression` 完成。之前是每层一次
-   eval，174 ms → 11 ms。
-2. **`update_menu_bar_layers` 回调只立 flag**（`S.need_fix = True`）。它是按
-   **显示器**调用的，如果在这里做手术，两个显示器就要做两遍。现在真正的 pass
-   由下一次 `resize_one_pill` 触发，一次重建只做一次。
-3. **删掉重复的爬升**：`_root_of` 已经折进 `_fix_expr` 了，但旧代码里 pill 回调
-   还留着「爬 6 层 superlayer」的循环——每次命中白跑 6 次 eval，一重建就是 18 次
-   多余的停进程。这是「还是特别卡」的直接原因之一，已删除。
-4. **跳过已经藏好的层**：表达式里 `if (isHidden) m++; else {…}`，重复命中不再
-   重复 set。
-5. **命中上限不再停进程**：以前 `hits >= MAXHITS` 会 `return False` → 进程停在
-   断点上直到脚本超时（桌面直接冻住）。现在改成打一行 `hit limit … reached —
-   still fixing, logging muted` 然后继续干活；`fix`/`settle` 下 `MAXHITS` 直接
-   拉到 1,000,000。
-6. **日志收敛**：前 12 个 pass 每次都打，之后每 200 个打一次；`fix/settle` 不再
-   挂 A/B/D/E 那些诊断断点（它们会命中全系统的 CALayer 属性 set）。
-7. **最终解：`settle`**。修好之后 `breakpoint disable` + detach，之后
-   **WindowServer 身上一个断点都没有**，零开销。这才是「不卡」的根本原因——
-   不是把每次暂停变快，而是让暂停次数变成 0。
+1. **Compress the whole repair into one expression** (`_fix_expr()`): climb to the
+   root, scan two levels, match the name, five setters and the count, all in one
+   `EvaluateExpression`. Previously it was one eval per layer: 174 ms → 11 ms.
+2. **The `update_menu_bar_layers` callback only raises a flag.** It is called
+   **per display**, so doing the surgery there would do it twice with two
+   displays. The actual pass is triggered by the next `resize_one_pill`, once per
+   rebuild.
+3. **Removed a duplicated climb.** `_root_of` was already folded into
+   `_fix_expr`, but the pill callback still had a "climb 6 superlayers" loop, so
+   every hit wasted 6 evals — 18 extra process stops per rebuild. That was one of
+   the direct causes of "still laggy"; it is gone.
+4. **Skip layers that are already hidden**: the expression runs
+   `if (isHidden) m++; else {…}`, so repeated hits do not repeat the setters.
+5. **The hit cap no longer stops the process**: it used to be that `hits >=
+   MAXHITS` returned `False` → the process stayed stopped on the breakpoint until
+   the script timed out (the desktop froze). Now it logs `hit limit … reached —
+   still fixing, logging muted` and keeps going; in `fix`/`settle` `MAXHITS` is
+   raised to 1,000,000 instead.
+6. **Quieter logs**: the first 12 passes log every time, afterwards every 200th;
+   `fix`/`settle` no longer arm the diagnostic breakpoints A/B/D/E (they hit every
+   CALayer property set in the system).
+7. **The actual solution: `settle`.** Once repaired, `breakpoint disable` +
+   detach leaves **not a single breakpoint on WindowServer**: zero overhead. That
+   is the real reason it stopped stuttering — not faster pauses, but zero pauses.
 
-## 每个 pill 都修（settle 期间）
+## Repairing on every pill (while `settle` waits)
 
-早期为了省停顿时只在**重建的第一次 pill** 上修（`need_fix` 门闩），结果第二块
-显示器常常抓不到，或者被 WindowServer 在第一个 pill 之后重画回来。现在的策略是：
+Early on, to save stops, only the **first pill of a rebuild** triggered the repair
+(a `need_fix` latch). The second display was often missed that way, or
+WindowServer repainted the backdrop after the first pill. The current strategy:
 
-- `settle` 期间**每一次** `resize_one_pill` 都跑那条修复表达式（一次重建 3 次，
-  每次 10–30 ms）——反正只是在「修好到撒手」这几秒里；
-- 一旦「WindowServer 报告过的每块屏的 root 都至少被修过两次」，立刻
-  `breakpoint disable` + detach，回到 0 停顿；
-- `T26_SETTLE_MAX`（默认 60s）是兜底：等不到就带一行 WARNING 撒手，而不是
-  永远挂着断点把机器拖卡。
+- while `settle` waits, **every** `resize_one_pill` runs the repair expression
+  (3 per rebuild, 10–30 ms each) — it only lasts the few seconds between "repaired"
+  and "let go";
+- as soon as the root of every display WindowServer reported has been repaired at
+  least twice, the breakpoints are disabled and the debugger detaches, back to
+  zero stops;
+- `T26_SETTLE_MAX` (60s by default) is the fallback: let go with a WARNING instead
+  of keeping the breakpoints armed forever and dragging the machine down.
 
-## `settle` 为什么能撒手
+## Why `settle` can let go
 
-WindowServer 每次重建都会把 backdrop 的 `hidden` 设回 `NO`，但**不会**恢复
-`opacity` / `contents` / `filters` / `backgroundFilters`。深度中和之后这一层
-既没有内容也没有滤镜、还是全透明，就算被设成可见也画不出玻璃。所以断点全禁用
-之后菜单栏仍然是透明的（用户实测：「现在一切正常 现在不卡」）。
+WindowServer sets the backdrop's `hidden` back to `NO` on every rebuild, but it
+does **not** restore `opacity` / `contents` / `filters` / `backgroundFilters`.
+After deep neutralisation the layer has no content, no filters and is fully
+transparent, so even when it is made visible it cannot draw glass. That is why the
+bar stays transparent with every breakpoint disabled (as reported after the real
+test: "everything is fine now, no lag").
 
-## 如果哪天 `settle` 撒手后玻璃回来了
+## If the glass comes back after `settle` on some future version
 
-说明这个系统版本的 WindowServer 连 `contents` 都会重画。那就退回 `fix`（常挂
-断点，每次重建 ~10–30 ms），或者更进一步：用一次性诊断找出「谁把 backdrop 设回
-`hidden:NO`」的调用点（`objc_msgSend$setHidden:` 的返回地址），直接在内存里把那
-条指令改掉——一次性补丁，之后零开销，重启即恢复。
+That would mean WindowServer on that version repaints `contents` as well. Fall
+back to `fix` (stay attached, ~10–30 ms per rebuild), or go further: use a one-off
+diagnostic to find the call site that sets the backdrop back to `hidden:NO` (the
+return address of `objc_msgSend$setHidden:`) and patch that instruction in memory
+— a one-time patch, zero overhead afterwards, gone on reboot.

@@ -1,87 +1,96 @@
-# 02 · 逆向笔记：SkyLight / WindowServer 的菜单栏
+# 02 · Reverse-engineering notes: the menu bar in SkyLight / WindowServer
 
-环境：`macOS 26 (Tahoe)`，Apple Silicon（arm64e），`csrutil status` = disabled，
-只有 Command Line Tools（无 Xcode）。下文的绝对地址都来自**本机这个 build**，
-换系统版本必须重新解析（地址会变，函数名不会）。
+Environment: macOS 14.6.1 (Darwin 23.6.0), Apple Silicon (arm64e), `csrutil
+status` = disabled, Command Line Tools only (no Xcode). The absolute addresses
+below come from **this build**; on a different system they have to be resolved
+again (addresses move, function names do not).
 
-## 1. 静态分析的天花板
+## 1. Where static analysis stops
 
 ```sh
-nm -n /tmp/SkyLight.macho | wc -l      # → 0（导出符号表为空）
+nm -n /tmp/SkyLight.macho | wc -l      # → 0 (the export table is empty)
 ```
 
-WindowServer 的菜单栏代码几乎全在 **SkyLight**（`/System/Library/PrivateFrameworks/
-SkyLight.framework/Versions/A/SkyLight`，约 5.2 MB）里；真正的渲染核心在
-CoreAnimation / QuartzCore。`update_menu_bar_layers`、`resize_one_pill` 这些
-都是**局部符号**，文件里不导出，所以：
+The menu bar code lives almost entirely in **SkyLight**
+(`/System/Library/PrivateFrameworks/SkyLight.framework/Versions/A/SkyLight`, about
+5.2 MB); the actual rendering core is CoreAnimation / QuartzCore.
+`update_menu_bar_layers` and `resize_one_pill` are **local symbols** that are not
+exported, so:
 
-- `nm` 拿不到 → 必须**运行时**在 lldb 里 `image lookup -rn MenuBar` 找；
-- `__cstring` 里的层名字符串（`SLMenuBarBackdropLayer` 等）**静态没有 xref**，
-  因为 chained fixups 在加载时才回填指针。所以「按字符串找引用」这条路死了，
-  只能在运行时看真实调用。
+- `nm` finds nothing → they have to be located **at runtime** with
+  `image lookup -rn MenuBar` inside lldb;
+- the layer name strings in `__cstring` (`SLMenuBarBackdropLayer` and friends)
+  have **no static xref**, because chained fixups only fill the pointers in at
+  load time. So "find the reference to this string" is a dead end; the real calls
+  can only be observed at runtime.
 
-Mach-O 布局（本机）：
+Mach-O layout (this machine):
 
-| 段 | 地址 / 大小 |
+| Segment | Address / size |
 | --- | --- |
 | `__TEXT` vmaddr | `0x185c06000` |
-| `__text` | 起 `0x185c08cac`，size `0x3f1fcc` |
-| `__cstring` | 起 `0x18602b360`，size `0x32e86`，文件偏移 `4346720` |
+| `__text` | starts `0x185c08cac`, size `0x3f1fcc` |
+| `__cstring` | starts `0x18602b360`, size `0x32e86`, file offset `4346720` |
 
-有符号的入口（运行时解析到的，本机带 ASLR 偏移前）：
+Symbols of interest (resolved at runtime, before the ASLR slide):
 
-| 符号 | 地址 | 备注 |
+| Symbol | Address | Note |
 | --- | --- | --- |
-| `update_menu_bar_layers` | `0x185d00674` | 每次菜单栏重建的核心函数 |
-| `resize_one_pill` | 调用点 `0x185d00d84` / `0x185d0130c` / `0x185d0141c` | **进入层树的入口** |
-| `objc_msgSend$updateLayer:key:rendererWork:` | `0x1860a7a40` | CoreUI 画材质，调用点 `0x185c8e400` / `0x185cffb84` / `~0x185d0139c` |
-| `objc_msgSend$setHidden:` | `0x1860a5780` | 重建时把 backdrop 设回可见就是它 |
-| `_sl_dlopen` | `0x185ffe5f8` | `update_menu_bar_layers` 里 dlopen CoreUI |
+| `update_menu_bar_layers` | `0x185d00674` | the core of every menu bar rebuild |
+| `resize_one_pill` | call sites `0x185d00d84` / `0x185d0130c` / `0x185d0141c` | **the way into the layer tree** |
+| `objc_msgSend$updateLayer:key:rendererWork:` | `0x1860a7a40` | CoreUI paints the material here; call sites `0x185c8e400` / `0x185cffb84` / `~0x185d0139c` |
+| `objc_msgSend$setHidden:` | `0x1860a5780` | this is what makes the backdrop visible again on every rebuild |
+| `_sl_dlopen` | `0x185ffe5f8` | `update_menu_bar_layers` dlopens CoreUI |
 
-## 2. `update_menu_bar_layers` 干了什么
+## 2. What `update_menu_bar_layers` does
 
-从反汇编（`/tmp/sl.asm`，`update_menu_bar_layers` 的 body 在第 253560 行左右，
-47 MB 的 symbolised disassembly）读出来的调用图：
+Call graph read off the disassembly (`/tmp/sl.asm`, the body of
+`update_menu_bar_layers` is around line 253560 of a 47 MB symbolised
+disassembly):
 
-1. `_sl_dlopen("CoreUI")`，然后拿符号：
-   `getkCUIWidgetKey`、`getkCUIBackdropCompatibleKey`、`getkCUIScaleKey`、
-   `getkCUIPresentationStateKey`、`getkCUIBezelTintColor`；
-2. 组一个 `CUIDescriptor` 字典（widget = menu bar，presentation state = 当前
-   外观，bezel tint = 壁纸取色）；
-3. `objc_msgSend$updateLayer:key:rendererWork:` 把材质画进某个 layer；
-4. 调 `resize_one_pill` 摆放 pill；
-5. 还有 `SLSLogBreak`、`CGXWindowGetOwner`、
-   `PKGManagedMenuSpaceWalkMenuBarCompanionWindows` 之类。
+1. `_sl_dlopen("CoreUI")`, then look up `getkCUIWidgetKey`,
+   `getkCUIBackdropCompatibleKey`, `getkCUIScaleKey`,
+   `getkCUIPresentationStateKey`, `getkCUIBezelTintColor`;
+2. build a `CUIDescriptor` dictionary (widget = menu bar, presentation state =
+   current appearance, bezel tint = colour sampled from the wallpaper);
+3. `objc_msgSend$updateLayer:key:rendererWork:` paints the material into some
+   layer;
+4. call `resize_one_pill` to place the pills;
+5. plus `SLSLogBreak`, `CGXWindowGetOwner`,
+   `PKGManagedMenuSpaceWalkMenuBarCompanionWindows` and the like.
 
-也就是说：**玻璃是 CoreUI 画出来的，但决定「哪一层可见」的是 SkyLight**。
-我们要干的是后者，不用碰前者。
+In other words: **CoreUI paints the glass, but SkyLight decides which layer is
+visible**. We work on the latter, so the former never has to be touched.
 
-## 3. 怎么在运行时定位层
+## 3. Locating the layers at runtime
 
 ```sh
 sudo tools/ws-symbols.sh    # image lookup -rn MenuBar / Backdrop / pill
 sudo tools/ws-disasm.sh     # disassemble -n update_menu_bar_layers / resize_one_pill
 ```
 
-两者都只 attach、不修改任何东西，输出 `/tmp/t26-ws-{symbols,disasm}.log`。
+Both only attach and modify nothing; they write
+`/tmp/t26-ws-{symbols,disasm}.log`.
 
-`resize_one_pill` 的签名（从反汇编推出来的形状）：
+The signature of `resize_one_pill`, inferred from the disassembly:
 
 ```
-resize_one_pill(space, CALayer *pill, CGRect, ...)   // pill 在 x2
+resize_one_pill(space, ctx, CALayer *pill, CGRect, ...)   // the layer is in x2
 ```
 
-`x2` 指向的层是 `SLMenuBarPill_*` 之一（或者它的父容器），从它往上爬 6 层就到
-root。实测爬升次数 ≤ 6，且 root 的 `superlayer` 为 nil。
+`x2` points at one of the `SLMenuBarPill_*` layers (or at their container), and
+climbing 6 `superlayer`s from there reaches the root. Measured: the climb is never
+more than 6, and the root's `superlayer` is nil.
 
-层树是用纯 ObjC 反射 dump 出来的（`libexec/t26/ws_hook.py` 里的 `_walk`）：
-`-[CALayer sublayers]`、`-name`、`-isHidden`、`-filters`、
-`-backgroundFilters`、`-compositingFilter`、`-className`。
+The tree is dumped by plain ObjC reflection (`_walk` in
+`libexec/t26/ws_hook.py`): `-[CALayer sublayers]`, `-name`, `-isHidden`,
+`-filters`, `-backgroundFilters`, `-compositingFilter`, `-className`.
 
-## 4. 菜单栏层名清单
+## 4. The menu bar layer names
 
-全部是**普通的 `CALayer`**（SkyLight 里没有 `SLMenuBar*Layer` 这个 ObjC 类，
-名字只是 `setName:` 的字符串）——所以能在 ObjC 层操作它们：
+They are all **plain `CALayer`s** — there is no `SLMenuBar*Layer` ObjC class in
+SkyLight, the names are just strings passed to `setName:` — which is exactly why
+they can be manipulated from ObjC:
 
 ```
 SLMenuBarOnScreenRootLayer        SLMenuBarBackdropLayer
@@ -92,44 +101,50 @@ SLMenuBarTextGroupLayer           SLMenuBarTextLayer
 SLMenuBarAppleLogoLayer           SLMenuBarShadowLayer
 ```
 
-这些名字在 `__cstring`（`0x18602b360` + 偏移）里能找到，但如 §1 所说静态没有
-xref，所以只能运行时观察。
+The strings are present in `__cstring` (`0x18602b360` + offset), but as noted in
+§1 they have no static xref, so they can only be observed at runtime.
 
-## 5. lldb 批量脚本的坑（踩过的）
+## 5. lldb batch-scripting pitfalls (all encountered)
 
-- 批量模式下正确的导入方式：`script import resolve`，然后
-  `script resolve.dump(lldb.debugger, '<addrs>')`；
-- **用命名断点**（`-N t26pill`），不要用数字 id——lldb 会把一个名字拆成多个
-  地址，编号会漂；
-- `-n` 后面要么给完整名字，要么给不带签名的名字（`update_menu_bar_layers`），
-  不能给带参数表的签名；
-- 自动继续是 `breakpoint modify -G true`（不是 `-a`，`-a` 是"之后追加命令"）；
-- 对 **void** 方法做 `(void)[obj setX]` 强制转换会让 lldb 假报
-  `unknown error`（调用其实成功了）；用 `(int)[obj setX]` 或 `(id)` 包一层；
-- Python 回调里返回 `False` **不会**停住进程（因为 `-G true` 会自动继续），
-  要真停只能 `process interrupt` 或 `breakpoint disable`；
-- Python 模块文件名**不能带横线**（`ws_hook.py`，不是 `ws-hook.py`）；
-- **不要在 Python timer 线程里 detach**：那里 `lldb.debugger` 是 `None`。
-  detach 交给 shell（FIFO `/tmp/t26-ctl`）做；
-- `SBDebugger` 没有 `GetNumBreakpoints()`，要
-  `GetSelectedTarget().GetNumBreakpoints()`；
-- **表达式 JIT 的两个坑**（`EvaluateExpression` 里才这样）：
-  - 取 `double` 返回值（如 `[(id)p opacity]`）拿到的是垃圾（`5.26e-315`），
-    必须用 `(float)` 取；
-  - `[(id)p contents] == 0` 这种「指针和字面量 0 比较」会被编错
-    （`err=False val=None`），要写成
-    `(unsigned long long)[(id)p contents] != 0`；
-  - 换句话说：`setHidden:` / `setOpacity:0.0` 这些 **void 调用**是可靠的，
-    读回值不可靠——所以「写」用一条表达式做完，验证另说。
+- the correct way to import in batch mode is `script import resolve`, followed by
+  `script resolve.dump(lldb.debugger, '<addrs>')`;
+- **use named breakpoints** (`-N t26pill`), never numeric ids: lldb splits one
+  name into several locations and the numbers drift;
+- after `-n`, give either the full name or the name without a signature
+  (`update_menu_bar_layers`); a signature with the parameter list does not work;
+- auto-continue is `breakpoint modify -G true` (not `-a`; `-a` means "append
+  commands after the existing ones");
+- casting a **void** method call as `(void)[obj setX]` makes lldb report a bogus
+  `unknown error` even though the call succeeded; use `(int)[obj setX]` or wrap
+  it in `(id)`;
+- returning `False` from a Python callback does **not** stop the process (because
+  `-G true` auto-continues); to really stop it, use `process interrupt` or
+  `breakpoint disable`;
+- Python module file names **must not contain dashes** (`ws_hook.py`, not
+  `ws-hook.py`);
+- **never detach from a Python timer thread**: `lldb.debugger` is `None` there.
+  Detaching is the shell's job (FIFO `/tmp/t26-ctl`);
+- `SBDebugger` has no `GetNumBreakpoints()`; use
+  `GetSelectedTarget().GetNumBreakpoints()`;
+- **two expression-JIT pitfalls** (only inside `EvaluateExpression`):
+  - reading a `double` return value (e.g. `[(id)p opacity]`) yields garbage
+    (`5.26e-315`); read it as `(float)`;
+  - comparing a pointer with the literal zero, `[(id)p contents] == 0`, is
+    compiled wrongly (`err=False val=None`); write
+    `(unsigned long long)[(id)p contents] != 0` instead;
+  - in short: the **void setters** (`setHidden:`, `setOpacity:0.0`) are
+    reliable, reading values back is not — so do the writes in one expression and
+    verify separately.
 
-## 6. 复现路径（换机 / 换版本）
+## 6. Reproducing this on another machine or OS version
 
-1. `sudo tools/ws-symbols.sh` 确认 `update_menu_bar_layers`、`resize_one_pill`
-   还在，记下新地址；
-2. `sudo t26 tree` 看层树，确认 backdrop 层名字是否仍含
-   `MenuBarBackdrop`，以及它是不是 root 的兄弟；
-3. 名字变了就 `sudo t26 tree` 后设置
-   `T26_PATTERN=<新名字>` 再跑 `settle`；
-4. 如果 backdrop 不再是兄弟而变成父节点（文字在它里面），那 `setHidden:YES`
-   会连文字一起藏掉——这种情况改用「只清 contents/filters、不设 hidden」，
-   即 `T26_DEEP=0` + 只 `setContents:nil` 的组合，需要再验证。
+1. `sudo tools/ws-symbols.sh` to confirm `update_menu_bar_layers` and
+   `resize_one_pill` still exist, and note the new addresses;
+2. `sudo t26 tree` to see the layer tree, confirm the backdrop layer name still
+   contains `MenuBarBackdrop` and that it is still a sibling of the root's
+   children;
+3. if the name changed, set `T26_PATTERN=<new name>` and run `settle` again;
+4. if the backdrop is no longer a sibling but a parent (with the text inside it),
+   `setHidden:YES` would hide the text too — in that case switch to "clear
+   contents/filters only, never hide", i.e. `T26_DEEP=0` with `setContents:nil`,
+   and verify again.
