@@ -14,12 +14,12 @@ SLSSetMenuBarSystemOverrideAlpha(cid, display, alpha, flags, animate)
 alpha，没有单独的 backdrop 通道。这就是用户第一轮说「我的图标菜单都没了」的
 原因。
 
-`Sources/transparent26` 里那套 Swift 代码保留了这条路线，只用来临时淡出调试，
+早期那套 Swift 客户端保留了这条路线（已经不随仓库发布），只用来临时淡出调试，
 **不是**最终方案。
 
 ## 2. 注入 dylib —— AMFI/平台二进制，跟 SIP 无关
 
-`Tweak/t26menuhook.m` + `tools/ws-inject.sh`（已验证不可行，已从仓库删除）是
+`t26menuhook.m` + `ws-inject.sh`（已验证不可行，已从仓库删除）是
 原始设想：swizzle `-[CALayer setName:]`，在服务进程里改层。结果：
 
 ```

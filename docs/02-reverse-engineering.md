@@ -74,7 +74,7 @@ resize_one_pill(space, CALayer *pill, CGRect, ...)   // pill 在 x2
 `x2` 指向的层是 `SLMenuBarPill_*` 之一（或者它的父容器），从它往上爬 6 层就到
 root。实测爬升次数 ≤ 6，且 root 的 `superlayer` 为 nil。
 
-层树是用纯 ObjC 反射 dump 出来的（`Tweak/ws_hook.py` 里的 `_walk`）：
+层树是用纯 ObjC 反射 dump 出来的（`libexec/t26/ws_hook.py` 里的 `_walk`）：
 `-[CALayer sublayers]`、`-name`、`-isHidden`、`-filters`、
 `-backgroundFilters`、`-compositingFilter`、`-className`。
 
@@ -126,9 +126,9 @@ xref，所以只能运行时观察。
 
 1. `sudo tools/ws-symbols.sh` 确认 `update_menu_bar_layers`、`resize_one_pill`
    还在，记下新地址；
-2. `sudo tools/ws-layer.sh tree -s 25` 看层树，确认 backdrop 层名字是否仍含
+2. `sudo t26 tree` 看层树，确认 backdrop 层名字是否仍含
    `MenuBarBackdrop`，以及它是不是 root 的兄弟；
-3. 名字变了就 `sudo tools/ws-layer.sh tree -s 25` 后设置
+3. 名字变了就 `sudo t26 tree` 后设置
    `T26_PATTERN=<新名字>` 再跑 `settle`；
 4. 如果 backdrop 不再是兄弟而变成父节点（文字在它里面），那 `setHidden:YES`
    会连文字一起藏掉——这种情况改用「只清 contents/filters、不设 hidden」，

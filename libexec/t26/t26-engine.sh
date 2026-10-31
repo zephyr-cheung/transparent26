@@ -1,53 +1,46 @@
 #!/bin/bash
-# transparent26 · menu bar backdrop surgery inside WindowServer
+# t26-engine — privileged engine behind `t26` (do not run by hand).
 #
 # WindowServer is a platform binary, so AMFI refuses to map any dylib into it
-# ("mapped file is not" a platform binary) no matter what SIP says. Debugging is
-# allowed, though: this script stops WindowServer under lldb, hooks
-# SkyLight`resize_one_pill (its CALayer argument is inside the live menu bar
+# ("mapped file is not a platform binary") no matter what SIP says. Debugging is
+# allowed, though: this engine stops WindowServer under lldb, hooks
+# SkyLight`resize_one_pill (its CALayer argument sits inside the live menu bar
 # layer tree), climbs to the bar's root and neutralises every child whose name
 # contains "MenuBarBackdrop". The backdrop is a *sibling* of the text / icon /
-# shadow / pill layers, so only the Liquid Glass disappears. Nothing is loaded
-# and nothing is written to disk; the change dies with the next WindowServer
-# restart (log out / reboot).
+# shadow / pill layers, so only the Liquid Glass disappears: nothing is loaded
+# into WindowServer and nothing is written to disk. The change dies with the
+# next WindowServer restart (log out / reboot).
 #
-# usage: sudo tools/ws-layer.sh [settle|fix|tree|probe|hunt|theme] [-s SECONDS]
-#        tools/ws-layer.sh --status
+# The `t26` CLI is the only supported front end; it validates the options, runs
+# the preflight checks, streams this engine's log lines and prints the summary.
+# This script therefore expects to be spawned, not typed:
 #
-#   settle  neutralise once, then disable the breakpoints and detach — no
-#           debugger left, WindowServer runs at full speed (recommended)
-#   fix     stay attached and re-fix on every rebuild (fallback)
-#   tree    dump the live menu bar CALayer tree (names, classes, filters)
-#   probe   log which layer names WindowServer assigns, change nothing
-#   hunt    log every render-layer setter called from the menu bar code
-#   theme   log the layers CUICoreThemeRenderer paints (that is the glass)
+#   t26-engine.sh <settle|fix|tree|probe|hunt|theme> -s SECONDS
 #
-# env: T26_PID     target pid (default: WindowServer)
-#      T26_SECS    give up after this many seconds (default 30)
-#      T26_PATTERN layer-name substring to act on (default MenuBarBackdrop)
-#      T26_MAXFIX  stop after this many neutralised layers (0 = never stop)
-#      T26_DEEP    also drop contents/filters/opacity (default 1)
+# env: T26_PID         target pid (default: WindowServer)
+#      T26_SECS        give up after this many seconds (default 30)
+#      T26_PATTERN     layer-name substring to act on (default MenuBarBackdrop)
+#      T26_MAXFIX      stop after this many neutralised layers (0 = never stop)
+#      T26_DEEP        also drop contents/filters/opacity (default 1)
 #      T26_SETTLE_MIN  earliest detach, seconds (default 4)
-#      T26_SETTLE_MAX  give up waiting for every display to be confirmed (default 60)
-#      T26_LOG     log file (default /tmp/t26hook.log)
+#      T26_SETTLE_MAX  give up waiting for every display to be confirmed (60)
+#      T26_LOG         log file (default /tmp/t26hook.log)
+#      T26_QUIET       print nothing on stdout, log only (set by the CLI)
 #
 # docs: docs/01-how-it-works.md  ·  02-reverse-engineering  ·  03-dead-ends
-#       04-performance (为什么卡 / 怎么不卡)
+#       04-performance (why the debugger costs frames, and how settle avoids it)
 #
-# SAFETY: while lldb is attached WindowServer is stopped at every hit, so the
-# desktop may stutter for a moment. Never Ctrl-C this script — SIGINT makes a
-# batch lldb *kill* the target. If it ever seems stuck, open another terminal:
-#     sudo sh -c 'echo "process interrupt" > /tmp/t26-ctl'
-#     sudo sh -c 'echo "process detach"    > /tmp/t26-ctl'
-# which hands WindowServer back without killing it.
-
 set -uo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-HOOK="$ROOT/Tweak/ws_hook.py"
+SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HOOK="${T26_HOOK:-$SELF_DIR/ws_hook.py}"
+[ -f "$HOOK" ] || { echo "t26-engine: hook not found: $HOOK" >&2; exit 3; }
 LOG="${T26_LOG:-/tmp/t26hook.log}"
 LLDBLOG=/tmp/t26-layer-lldb.log
 CTL=/tmp/t26-ctl
+
+QUIET="${T26_QUIET:-0}"
+say() { [ "$QUIET" = 1 ] || printf '%s\n' "$*"; }
 
 MODE=settle
 SECS=""
@@ -55,15 +48,10 @@ while [ $# -gt 0 ]; do
     case "$1" in
         probe|hunt|theme|tree|fix|settle) MODE="$1" ;;
         -s|--seconds) shift; SECS="${1:-}" ;;
-        --status)
-            echo "==> hook log: $LOG"
-            if [ -f "$LOG" ]; then tail -30 "$LOG"; else
-                echo "    (no log yet — run: sudo $0 fix)"; fi
-            exit 0 ;;
         -h|--help)
-            sed -n '2,/^$/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+            say "t26-engine is an internal helper; use: t26 help"
             exit 0 ;;
-        *) echo "ws-layer.sh: unknown argument: $1" >&2; exit 2 ;;
+        *) echo "t26-engine: unknown argument: $1" >&2; exit 2 ;;
     esac
     shift
 done
@@ -71,38 +59,38 @@ done
 PID="${T26_PID:-}"
 if [ -z "$PID" ]; then
     PID="$(pgrep -x WindowServer | head -1)"
-    [ -n "$PID" ] || { echo "ws-layer.sh: WindowServer not found" >&2; exit 1; }
+    [ -n "$PID" ] || { echo "t26-engine: WindowServer not found" >&2; exit 4; }
     if [ "$(id -u)" != 0 ]; then
-        echo "ws-layer.sh: must run as root to debug WindowServer" >&2
-        echo "             try:  sudo $0 $MODE" >&2
-        exit 1
+        echo "t26-engine: must run as root to debug WindowServer" >&2
+        echo "            try:  sudo t26 $MODE" >&2
+        exit 3
     fi
 fi
 
 SECS="${SECS:-${T26_SECS:-}}"
 [ -n "$SECS" ] || SECS=$([ "$MODE" = probe ] && echo 25 || echo 30)
 
-echo "==> mode $MODE, target pid $PID, up to ${SECS}s"
+say "==> mode $MODE, target pid $PID, up to ${SECS}s"
 if [ "$MODE" = probe ]; then
-    echo "    nothing is modified; layer names are only logged"
+    say "    nothing is modified; layer names are only logged"
 elif [ "$MODE" = hunt ]; then
-    echo "    nothing is modified; menu-bar layer setters are only logged"
+    say "    nothing is modified; menu-bar layer setters are only logged"
 elif [ "$MODE" = theme ]; then
-    echo "    nothing is modified; the layers CoreUI paints are only logged"
+    say "    nothing is modified; the layers CoreUI paints are only logged"
 elif [ "$MODE" = settle ]; then
-    echo "    the backdrop is emptied out (hidden, no contents, no filters, no"
-    echo "    opacity), then the breakpoints are disabled and the debugger lets"
-    echo "    go, so WindowServer runs at full speed. Watch the bar afterwards:"
-    echo "    if the glass returns, WindowServer repaints it on every rebuild."
+    say "    the backdrop is emptied out (hidden, no contents, no filters, no"
+    say "    opacity), then the breakpoints are disabled and the debugger lets"
+    say "    go, so WindowServer runs at full speed. Watch the bar afterwards:"
+    say "    if the glass returns, WindowServer repaints it on every rebuild."
 elif [ "$MODE" = tree ]; then
-    echo "    nothing is modified; the menu bar CALayer tree is only dumped"
+    say "    nothing is modified; the menu bar CALayer tree is only dumped"
 else
-    echo "    the desktop may stutter for a few seconds while attached."
-    echo "    text, icons, status items, pills and the shadow are untouched;"
-    echo "    only the backdrop layer is disabled."
-    echo "    two lldb expressions per menu bar rebuild: -s 600 is comfortable."
+    say "    the desktop may stutter for a few seconds while attached."
+    say "    text, icons, status items, pills and the shadow are untouched;"
+    say "    only the backdrop layer is disabled."
+    say "    two lldb expressions per menu bar rebuild: -s 600 is comfortable."
 fi
-echo "    log: $LOG    lldb: $LLDBLOG"
+say "    log: $LOG    lldb: $LLDBLOG"
 
 : >"$LLDBLOG"
 rm -f "$CTL"; mkfifo "$CTL"; chmod 600 "$CTL"
@@ -209,6 +197,17 @@ for _ in $(seq $end); do
     awk -v s="$SEP" 'index($0,s){f=1} f' "$LOG" 2>/dev/null | grep -q "^t26: done:" && break
 done
 
+# A run that never reached a conclusion (time budget used up while still
+# waiting for the last display) still needs a verdict in the log: the CLI
+# reports on it, and a silent ending looks like a crash.
+if ! awk -v s="$SEP" 'index($0,s){f=1} f' "$LOG" 2>/dev/null | grep -q "^t26: done:"; then
+    if [ "$MODE" = settle ]; then
+        echo "t26: done: timed out after ${SECS}s — the menu bar was not confirmed on every display" >>"$LOG"
+    else
+        echo "t26: done: timed out after ${SECS}s — the time budget ran out" >>"$LOG"
+    fi
+fi
+
 # Hand WindowServer back: interrupt (it may still be running), then detach,
 # retrying until lldb confirms. Only then close stdin so lldb exits by EOF;
 # never "quit" while still attached, and never send this script a SIGINT.
@@ -227,57 +226,24 @@ exec 3>&-
 wait $LLDB 2>/dev/null
 rm -f "$CTL"
 
-echo "==> lldb finished (detach: $detached, session: $LLDBLOG)"
+say "==> lldb finished (detach: $detached, session: $LLDBLOG)"
 if [ "$detached" = no ]; then
-    echo "==> WARNING: lldb may still be attached. Do not kill it; run:"
-    echo "    sudo sh -c 'echo \"process detach\" > $CTL'"
+    say "==> WARNING: lldb may still be attached. Do not kill it; run:"
+    say "    sudo sh -c 'echo \"process detach\" > $CTL'"
 fi
-pgrep -x WindowServer >/dev/null && echo "==> WindowServer pid $(pgrep -x WindowServer | head -1) alive" \
-    || echo "==> WARNING: WindowServer is not running (log out to recover)"
+pgrep -x WindowServer >/dev/null && say "==> WindowServer pid $(pgrep -x WindowServer | head -1) alive" \
+    || say "==> WARNING: WindowServer is not running (log out to recover)"
 if grep -qE "^error: " "$LLDBLOG"; then
-    echo "==> lldb notes:"
+    say "==> lldb notes:"
     grep -E "^error: " "$LLDBLOG" | grep -v "Process must be launched" |
         head -5 | sed 's/^/    /'
 fi
 
-RUNLOG="$(awk -v s="$SEP" 'index($0,s){f=1} f' "$LOG" 2>/dev/null)"
-
-echo "==> hook log ($LOG)"
-if [ -f "$LOG" ]; then
-    printf '%s\n' "$RUNLOG" | tail -25 | sed 's/^t26: /    /'
-else
-    echo "    (empty — the breakpoint was never hit)"
+# The CLI reads the run block out of the log and prints the summary; the engine
+# only has to report a detach that did not happen.
+if [ "$detached" = no ]; then
+    echo "t26-engine: lldb may still be attached to pid $PID" >&2
+    echo "t26-engine: run: sudo t26 abort" >&2
+    exit 5
 fi
-matches=$(printf '%s' "$RUNLOG" | grep -c "MATCH" || true)
-hunted=$(printf '%s' "$RUNLOG" | grep -c "HUNT " || true)
-themed=$(printf '%s' "$RUNLOG" | grep -c "THEME " || true)
-trees=$(printf '%s' "$RUNLOG" | grep -c "MENUBAR layer: " || true)
-fixed=$(printf '%s' "$RUNLOG" | grep -c "neutralised" || true)
-
-if [ "$fixed" -gt 0 ]; then
-    echo
-    echo "==> done: $fixed layer(s) neutralised — text, icons and status items"
-    echo "    are untouched. Undo: log out or reboot (nothing is persisted)."
-elif [ "$trees" -gt 0 ]; then
-    echo
-    echo "==> $trees menu bar CALayer tree(s) dumped (MENUBAR layer / super / tree)."
-    echo "    Nothing was changed — read the names and filters above."
-elif [ "$themed" -gt 0 ]; then
-    echo
-    echo "==> $themed CoreUI-rendered layer(s) logged (lines marked THEME)."
-    echo "    Nothing was changed — this was a check of where the glass lives."
-elif [ "$hunted" -gt 0 ]; then
-    echo
-    echo "==> $hunted render-layer setter call(s) came from the menu bar code"
-    echo "    (lines marked HUNT). Nothing was changed — this was a hunt."
-elif [ "$matches" -gt 0 ]; then
-    echo
-    echo "==> $matches matching layer name(s) were seen, but nothing was"
-    echo "    neutralised — read the MATCH lines above to see which path"
-    echo "    WindowServer uses."
-elif [ "$MODE" = fix ]; then
-    echo
-    echo "==> no matching layer name was seen in this run."
-    echo "    Click the Apple menu once to force a rebuild, or dump the tree:"
-    echo "        sudo $0 tree -s 25"
-fi
+exit 0

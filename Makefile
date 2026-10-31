@@ -1,61 +1,38 @@
-# transparent26 — build with the Command Line Tools only (no Xcode needed).
+# t26 — build with the Command Line Tools only (no Xcode needed).
 
-SWIFTC ?= swiftc
-BIN    ?= bin/transparent26
-SRC    := $(wildcard Sources/transparent26/*.swift)
+PREFIX  ?= /usr/local
+DESTDIR ?=
+SWIFTC  ?= swiftc
 
-.PHONY: all build app run restore layer hunt theme tree settle hold probe status clean
+BIN     := bin/t26
+LIBEXEC := libexec/t26
+SOURCES := $(wildcard Sources/t26/*.swift)
 
-all: app
+.PHONY: all build install uninstall check clean
 
-# --- legacy client tool (SkyLight override, fades the whole bar) ----------
-app: $(BIN)
+all: build
 
-$(BIN): $(SRC) | bin
-	$(SWIFTC) -O -o $(BIN) $(SRC)
+build: $(BIN)
+
+$(BIN): $(SOURCES) | bin
+	$(SWIFTC) -O -o $@ $(SOURCES)
 
 bin:
-	mkdir -p bin
+	@mkdir -p bin
 
-build: app
+# /usr/local/bin/t26 + /usr/local/libexec/t26/{t26-engine.sh,ws_hook.py}
+install: $(BIN)
+	install -d $(DESTDIR)$(PREFIX)/bin $(DESTDIR)$(PREFIX)/libexec/t26
+	install -m 755 $(BIN) $(DESTDIR)$(PREFIX)/bin/t26
+	install -m 755 $(LIBEXEC)/t26-engine.sh $(DESTDIR)$(PREFIX)/libexec/t26/
+	install -m 644 $(LIBEXEC)/ws_hook.py $(DESTDIR)$(PREFIX)/libexec/t26/
 
-# --- the actual fix: backdrop surgery inside WindowServer ----------------
-# No code is loaded into WindowServer; lldb stops it, one expression hides the
-# glass layer, then the debugger lets go. See docs/01-how-it-works.md.
+uninstall:
+	rm -f $(DESTDIR)$(PREFIX)/bin/t26
+	rm -rf $(DESTDIR)$(PREFIX)/libexec/t26
 
-# Recommended: neutralise, then disable the breakpoints and detach, so
-# WindowServer runs at full speed afterwards.
-settle:
-	@sudo tools/ws-layer.sh settle -s 40
-
-# Fallback: stay attached and re-fix on every menu bar rebuild.
-hold:
-	@sudo tools/ws-layer.sh fix -s 900
-
-layer: settle
-
-# --- diagnostics (nothing is modified) -----------------------------------
-tree:
-	@sudo tools/ws-layer.sh tree -s 25
-
-probe:
-	@sudo tools/ws-layer.sh probe
-
-hunt:
-	@sudo tools/ws-layer.sh hunt
-
-theme:
-	@sudo tools/ws-layer.sh theme
-
-status:
-	@tools/ws-layer.sh --status
-
-# --- legacy client tool actions ------------------------------------------
-run: app
-	./$(BIN)
-
-restore: app
-	./$(BIN) --restore
+check: $(BIN)
+	./$(BIN) doctor
 
 clean:
-	rm -rf bin build .build
+	rm -rf bin .build

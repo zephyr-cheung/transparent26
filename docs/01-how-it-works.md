@@ -27,7 +27,7 @@ root                                   (SLMenuBarOnScreenRootLayer，无名字)
      └─ SLMenuBarShadowLayer    fl=(gaussianBlur) cf=vibrantLightSourceOver
 ```
 
-这份 dump 是 `sudo tools/ws-layer.sh tree -s 25` 在真实 WindowServer 上跑出来
+这份 dump 是 `sudo t26 tree` 在真实 WindowServer 上跑出来
 的，不是猜的。
 
 ## 为什么不能注入 dylib
@@ -88,12 +88,12 @@ mapping process is a platform binary, but mapped file is not
 ## 用法
 
 ```sh
-cd ~/Desktop/Projects/transparent26
+make && sudo make install   # 只需一次
 
-sudo tools/ws-layer.sh settle -s 40   # 或 make settle：修好就撒手（推荐）
-sudo tools/ws-layer.sh fix -s 600     # 或 make hold：一直挂着断点
-sudo tools/ws-layer.sh tree -s 25     # 看一眼真实层树
-tools/ws-layer.sh --status            # 看日志尾巴
+sudo t26 settle             # 修好就撒手（推荐）
+sudo t26 fix -s 600         # 一直挂着断点（调试用，会掉帧）
+sudo t26 tree               # 看一眼真实层树
+t26 status                  # 上次跑了什么、成没成
 ```
 
 `settle` 会先挂断点做几个 pass（这几秒会卡，正常），然后
@@ -108,6 +108,10 @@ tools/ws-layer.sh --status            # 看日志尾巴
 | `tree` | 打印活的菜单栏层树，不改任何东西 |
 | `probe` / `hunt` / `theme` | 纯诊断，详见 [02](02-reverse-engineering.md) |
 
+CLI 是唯一入口：`-s/--seconds`、`--pattern`、`--shallow`、`--settle-min`、
+`--settle-max`、`--pid`、`--log` 会被翻译成下面这些引擎环境变量（手工调引擎时
+也可以直接设）。
+
 环境变量：`T26_MODE` `T26_PATTERN`（默认 `MenuBarBackdrop`）`T26_MAXFIX`
 （`fix` 下默认 0 = 不停）`T26_MAXHITS`（`fix/settle` 默认 1000000）
 `T26_DEEP`（默认 1，可关掉深度中和）`T26_SETTLE_MIN`（默认 4s，最早撒手时间）
@@ -119,7 +123,7 @@ tools/ws-layer.sh --status            # 看日志尾巴
 不需要任何持久化清理：
 
 - `settle` 之后想恢复：注销 / 重启（WindowServer 重启，一切复原）；
-- 或者直接再跑一次 `sudo tools/ws-layer.sh fix -s 5` 后手动把层
+- 或者直接再跑一次 `sudo t26 fix -s 5` 后手动把层
   `setHidden:NO`……没必要，重启最干净。
 
 磁盘上只多了 `/tmp/*.log`。
