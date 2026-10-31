@@ -129,8 +129,13 @@ Both are opt-in. `t26 agent install` turns `--fast` into a daemon: it watches fo
 screen unlock, display configuration changes and wallpaper changes, waits two
 seconds, runs `t26 settle --fast`, and goes back to sleep. It never holds the debugger while
 idle and never runs two settles at once. `sudo t26 agent uninstall` removes it;
-`t26 agent run` runs the watcher in the foreground, and `--full` makes it use the
-guarded settle instead.
+`t26 agent run` runs the watcher in the foreground, `--full` makes it use the
+guarded settle, and `--no-boot` stops it from repairing at startup/login.
+
+The daemon is a `/Library/LaunchDaemons/local.t26.agent.plist` with `RunAtLoad`
+and `KeepAlive`, so launchd starts it at boot, before anyone logs in. It repairs
+once when a session appears (`agent started` / `session started`), which is what
+makes the bar transparent without running anything by hand after a reboot.
 
 ### Do not press Ctrl-C
 

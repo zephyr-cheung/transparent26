@@ -158,7 +158,9 @@ Three answers, all shipped:
   after the last repair; catches a tree rebuilt *after* the first repair.
 - `t26 agent install` — a launchd watcher that notices unlock / display /
   wallpaper changes and runs `settle --fast` for you (`--full` switches it to the
-  guarded form).
+  guarded form). `RunAtLoad` + `KeepAlive` make it start at boot, and it repairs
+  once when a console session appears, so a reboot ends with a transparent bar
+  without any manual step.
 
 ## Undo
 

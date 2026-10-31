@@ -20,6 +20,7 @@ struct Options {
     var full = false
     var grace = 2
     var dryRun = false
+    var bootRepair = true
     var verbose = false
 }
 
@@ -40,6 +41,7 @@ func parse(_ arguments: [String]) -> Options {
         case "--guard": index += 1; if index < arguments.count { options.guardSeconds = Int(arguments[index]) ?? 8 }
         case "--grace": index += 1; if index < arguments.count { options.grace = Int(arguments[index]) ?? 2 }
         case "--full": options.full = true
+        case "--no-boot": options.bootRepair = false
         case "--dry-run": options.dryRun = true
         case "-v", "--verbose": options.verbose = true
         case "-h", "--help":
@@ -53,6 +55,7 @@ func parse(_ arguments: [String]) -> Options {
               --dry-run   print what would happen, run nothing
               --full      use the guarded settle instead of the one-shot repair
                           (stays attached longer: more reliable, more stutter)
+              --no-boot   do not repair when the agent starts or a user logs in
             """)
             exit(0)
         default:
@@ -100,9 +103,15 @@ func newestMtime(_ path: String) -> Double {
     return newest
 }
 
+/// The user whose session is on the console, or "" before anyone logs in.
+func consoleUser() -> String {
+    let user = SCDynamicStoreCopyConsoleUser(nil, nil, nil) as String? ?? ""
+    return user == "loginwindow" ? "" : user
+}
+
 func wallpaperFingerprint() -> Double {
-    let consoleUser = SCDynamicStoreCopyConsoleUser(nil, nil, nil) as String? ?? ""
-    guard !consoleUser.isEmpty, consoleUser != "loginwindow" else { return 0 }
+    let consoleUser = consoleUser()
+    guard !consoleUser.isEmpty else { return 0 }
     let home = "/Users/" + consoleUser
     return [
         home + "/Library/Application Support/com.apple.wallpaper",
@@ -180,8 +189,17 @@ log("t26-agent started (t26 \(options.t26), mode \(arguments(options).joined(sep
 var lastLocked = isLocked()
 var lastDisplays = displayFingerprint()
 var lastWallpaper = wallpaperFingerprint()
+var lastConsole = consoleUser()
 if options.verbose {
-    log("locked=\(lastLocked) displays=[\(lastDisplays)] wallpaper=\(Int(lastWallpaper))")
+    log("user='\(lastConsole)' locked=\(lastLocked) displays=[\(lastDisplays)] wallpaper=\(Int(lastWallpaper))")
+}
+
+// Started at boot with a session already on screen (launchd starts this before
+// login, but it can also be restarted or started by hand): the bar has just been
+// built by a new WindowServer, so repair it without waiting for an event.
+if options.bootRepair, !lastConsole.isEmpty, !lastDisplays.isEmpty {
+    Thread.sleep(forTimeInterval: Double(options.grace))
+    settle(options, reason: "agent started")
 }
 
 while true {
@@ -189,9 +207,14 @@ while true {
     let locked = isLocked()
     let displays = displayFingerprint()
     let wallpaper = wallpaperFingerprint()
+    let user = consoleUser()
 
     var reason: String?
-    if lastLocked && !locked {
+    if options.bootRepair, lastConsole.isEmpty, !user.isEmpty {
+        // Logging in: WindowServer has a brand new bar, and the repair from the
+        // previous session died with the old process.
+        reason = "session started (\(user))"
+    } else if lastLocked && !locked {
         reason = "screen unlocked"
     } else if !displays.isEmpty, displays != lastDisplays {
         reason = "display configuration changed"
@@ -199,12 +222,14 @@ while true {
         reason = "wallpaper changed"
     }
 
-    if options.verbose && (displays != lastDisplays || wallpaper != lastWallpaper || locked != lastLocked) {
-        log("state locked=\(locked) displays=[\(displays)] wallpaper=\(Int(wallpaper))")
+    if options.verbose && (displays != lastDisplays || wallpaper != lastWallpaper
+                           || locked != lastLocked || user != lastConsole) {
+        log("state user='\(user)' locked=\(locked) displays=[\(displays)] wallpaper=\(Int(wallpaper))")
     }
     lastLocked = locked
     lastDisplays = displays
     lastWallpaper = wallpaper
+    lastConsole = user
 
     if let reason {
         // The bar is rebuilt a moment after the event, not instantly: settle
@@ -214,6 +239,7 @@ while true {
         lastLocked = isLocked()
         lastDisplays = displayFingerprint()
         lastWallpaper = wallpaperFingerprint()
+        lastConsole = consoleUser()
         settle(options, reason: reason)
     }
 }
