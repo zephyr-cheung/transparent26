@@ -1,13 +1,13 @@
 import Foundation
 
 enum Command: String {
-    case settle, fix, tree, probe, hunt, theme
+    case settle, fix, tree, probe, hunt, theme, space
     case status, doctor, logs, abort, agent
     case version, help
 
     var needsWindowServer: Bool {
         switch self {
-        case .settle, .fix, .tree, .probe, .hunt, .theme, .abort: return true
+        case .settle, .fix, .tree, .probe, .hunt, .theme, .space, .abort: return true
         default: return false
         }
     }
@@ -20,7 +20,7 @@ enum Command: String {
         switch self {
         case .settle: return 40
         case .fix: return 900
-        case .tree: return 25
+        case .tree, .space: return 25
         case .probe: return 25
         case .theme: return 25
         case .hunt: return 60
@@ -180,6 +180,7 @@ USAGE
   sudo t26 probe                   log the layer names WindowServer assigns
   sudo t26 hunt                    log the setters the menu bar code calls
   sudo t26 theme                   log what the CoreUI renderer paints
+  sudo t26 space                   dump the long-lived menu bar space structs
        t26 status [--json]         what this machine looks like right now
        t26 doctor                  check the prerequisites
        t26 logs [-n N] [-f|--all]  read the hook log
@@ -227,6 +228,22 @@ DOCS
 """
 
 let commandNotes: [Command: String] = [
+    .space: """
+    space — dump the long-lived menu bar objects, change nothing.
+
+    update_menu_bar_layers(PKGManagedMenuSpace *space, display, AppMenuBarInfo_t
+    *info, CGXWindow *bar) is where SkyLight decides what material the bar gets.
+    The space outlives every layer rebuild, so anything there survives an unlock
+    or a wallpaper change - which is what a "one write, no debugger afterwards"
+    fix would have to change. The struct layouts are unknown, so the words are
+    dumped and diffed:
+
+      sudo t26 space                    # unlocked
+      ssh macbook-air sudo t26 space    # while the screen is locked
+      diff <(sudo t26 space) <(...)
+
+    Read-only; nothing is written.
+    """,
     .settle: """
     settle — neutralise the backdrop, then let go of the debugger.
 
@@ -269,6 +286,12 @@ let commandNotes: [Command: String] = [
     """,
     .theme: """
     theme — log the layers CoreUI's theme renderer paints.
+
+    space — dump the long-lived menu bar objects (PKGManagedMenuSpace and the
+    AppMenuBarInfo_t it is rebuilt from) instead of the layers. Everything that
+    decides whether the bar gets a material lives on that side, and it survives
+    a layer rebuild, so this is what a "one write, no debugger afterwards" fix
+    would have to change. Read-only.
 
     Read-only. That renderer is what produces the glass pixels, but it is shared
     with every other material on screen, so this is diagnostic only.

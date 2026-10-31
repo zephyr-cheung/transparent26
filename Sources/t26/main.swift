@@ -49,7 +49,7 @@ case .abort:
     guard let layout else { die(Layout.missingMessage(), .blocked) }
     commandAbort(options, layout: layout)
 
-case .settle, .fix, .tree, .probe, .hunt, .theme:
+case .settle, .fix, .tree, .probe, .hunt, .theme, .space:
     guard let layout else { die(Layout.missingMessage(), .blocked) }
     runEngineCommand(options, layout: layout)
 }

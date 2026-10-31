@@ -113,6 +113,14 @@ without a backdrop, so that nothing has to be repaired ever again.
   in the extracted binary. So "hook the code that names the layer" is not
   reachable statically, only at runtime.
 
+What is still open: SkyLight has a set of per-menu-bar *settings* keys
+(`kSLSMenuBarHasHiddenUserspaceBarKey`, `kSLSMenuBarReduceTransparency`,
+`kSLSMenuBarIncreasedContrast`, `kSLSMenuBarUseFullScreenMenuBarAppearance`).
+Those live on the space, which outlives every layer rebuild, so a flag there
+would be the "write once, never hook again" fix. They have no static xref in the
+extracted image either (its fixup tables are gone), so this can only be settled by
+dumping the live objects - see `t26 space`.
+
 Conclusion: the only durable lever is to re-apply the repair after the event,
 which is what `--guard` and `t26 agent` do.
 

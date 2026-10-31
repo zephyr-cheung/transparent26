@@ -1,7 +1,7 @@
 import Darwin
 import Foundation
 
-let t26Version = "0.2.3"
+let t26Version = "0.2.4"
 
 /// Exit codes are part of the CLI contract: scripts branch on them.
 enum ExitCode: Int32 {

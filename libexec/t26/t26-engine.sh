@@ -48,7 +48,7 @@ MODE=settle
 SECS=""
 while [ $# -gt 0 ]; do
     case "$1" in
-        probe|hunt|theme|tree|fix|settle) MODE="$1" ;;
+        probe|hunt|theme|tree|space|fix|settle) MODE="$1" ;;
         -s|--seconds) shift; SECS="${1:-}" ;;
         -h|--help)
             say "t26-engine is an internal helper; use: t26 help"
@@ -86,6 +86,9 @@ elif [ "$MODE" = settle ]; then
     say "    if the glass returns, WindowServer repaints it on every rebuild."
 elif [ "$MODE" = tree ]; then
     say "    nothing is modified; the menu bar CALayer tree is only dumped"
+elif [ "$MODE" = space ]; then
+    say "    nothing is modified; the long-lived menu bar space / info structs"
+    say "    are only dumped (diff a locked run against an unlocked one)"
 else
     say "    the desktop may stutter for a few seconds while attached."
     say "    text, icons, status items, pills and the shadow are untouched;"

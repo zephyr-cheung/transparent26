@@ -100,6 +100,8 @@ class State(object):
     theme_logged = 0
     tree_logged = 0
     trees = set()      # root pointers already dumped (one per display)
+    spaces = set()     # PKGManagedMenuSpace pointers already dumped
+    space_logged = 0
     last_tree = 0.0
     fast_logged = 0
     passes = 0
@@ -269,11 +271,60 @@ def on_menu_bar_layers(frame, bp_loc, internal_dict):
             # which has a real CALayer. This call is made once per display.
             S.displays.add(frame.FindRegister("x1").GetValueAsUnsigned() & 0xffffffff)
             return True
-        log("update_menu_bar_layers called (display=%d)"
-            % (frame.FindRegister("x1").GetValueAsUnsigned() & 0xffffffff))
+        if MODE == "space":
+            _dump_space(frame)
+        else:
+            log("update_menu_bar_layers called (display=%d)"
+                % (frame.FindRegister("x1").GetValueAsUnsigned() & 0xffffffff))
     except Exception:
         import traceback
         log("menu_bar_layers error:\n" + traceback.format_exc())
+    return True
+
+
+def _dump_space(frame):
+    """Read-only dump of the menu bar space / info structs.
+
+    update_menu_bar_layers(PKGManagedMenuSpace *space, unsigned display,
+    AppMenuBarInfo_t const *info, CGXWindow *bar) - the three object arguments
+    are the long-lived side of the menu bar (the space outlives every layer
+    rebuild), so anything that decides "is there a material" lives in one of
+    them. The struct layouts are unknown, so this dumps words and lets the two
+    dumps (locked / unlocked) be diffed instead of guessed at.
+    """
+    proc = frame.GetThread().GetProcess()
+    args = [("space", "x0"), ("display", "x1"), ("info", "x2"), ("window", "x3")]
+    ptrs = {}
+    for name, reg in args:
+        ptrs[name] = _reg(frame, reg)
+    if not ptrs["space"]:
+        return
+    S.spaces.add(ptrs["space"])
+    S.space_logged += 1
+    log("SPACE dump %d: space=%#x display=%d info=%#x window=%#x"
+        % (S.space_logged, ptrs["space"], ptrs["display"] & 0xffffffff,
+           ptrs["info"], ptrs["window"]))
+    for name in ("space", "info", "window"):
+        addr = ptrs[name]
+        if not addr:
+            log("  %s: null" % name)
+            continue
+        err = lldb.SBError()
+        data = proc.ReadMemory(addr, 256, err)
+        if data is None or (hasattr(err, "Success") and not err.Success()):
+            log("  %s: unreadable" % name)
+            continue
+        if hasattr(data, "GetUnsignedInt64"):        # SBData
+            raw = bytes(data.GetUnsignedInt8(err, i) for i in range(256))
+        else:                                        # this lldb returns bytes
+            raw = bytes(data)
+        log("  %s @%#x:" % (name, addr))
+        for i in range(0, len(raw) - 31, 32):
+            words = ["%016x" % int.from_bytes(raw[i + j:i + j + 8], "little")
+                     for j in range(0, 32, 8)]
+            log("    +%03x  %s" % (i, " ".join(words)))
+    if S.space_logged >= 4:
+        return not _done("dumped %d menu bar call(s)" % S.space_logged)
     return True
 
 
