@@ -16,8 +16,8 @@ tools/ws-layer.sh --status            # 看日志
 
 `settle` 会挂上断点做几个 pass（这几秒会卡一下，正常），把菜单栏的 backdrop 层
 中和掉，然后**把断点全部禁用并 detach**——之后 WindowServer 身上没有任何调试器，
-跑满速，菜单栏依然是透明的。已在本机真实 WindowServer 上验证：玻璃消失、图标与
-文字完整、切窗口不卡。
+跑满速，菜单栏依然是透明的。已在本机真实 WindowServer 上验证（双显示器）：玻璃消失、
+图标与文字完整、切窗口不卡，detach 之后两块屏都保持透明。
 
 要求：**SIP 关闭**（`csrutil status` = disabled）+ 你自己执行 `sudo`。
 

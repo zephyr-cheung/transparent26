@@ -82,7 +82,8 @@ mapping process is a platform binary, but mapped file is not
 注意一个坑（双屏踩到的）：`settle` 曾经在「4 个 pass + 3 秒」之后就撒手，结果
 第二块屏的 bar 只被修过**一次**就没人管了，重建之后又变成磨砂。现在 `settle`
 的退出条件是「**WindowServer 报告过的每一块显示器的 root 都至少被修过两次**」，
-或者等满 `T26_SETTLE_MAX`（默认 60s）后带警告退出。
+或者等满 `T26_SETTLE_MAX`（默认 60s）后带警告退出。改完之后双屏实测
+`2/2 display(s) confirmed`，撒手后两块屏都稳定透明。
 
 ## 用法
 
