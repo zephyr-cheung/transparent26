@@ -148,13 +148,17 @@ those objects do. Two different things can take it away:
   rewritten, `darken` → `lighten`), while the external display came back with a
   different root and backdrop pointer holding `contents` again.
 
-Two answers, both shipped:
+Three answers, all shipped:
 
-- `t26 settle --guard N` — keep the breakpoints armed until the bar has been
-  quiet for N seconds, so the repair survives the burst of rebuilds that follows
-  an unlock or a wake, then detach.
+- `t26 settle --fast` — attach, repair, detach as soon as every display the CLI
+  can see has a repaired bar (`T26_DISPLAYS`). The deep state survives ordinary
+  rebuilds, so there is nothing left to wait for; no forced rebuild means no
+  focus stealing. This is the cheapest form: ~1s attached.
+- `t26 settle --guard N` — stay armed until the bar has been quiet for N seconds
+  after the last repair; catches a tree rebuilt *after* the first repair.
 - `t26 agent install` — a launchd watcher that notices unlock / display /
-  wallpaper changes and runs `settle --guard 8` for you.
+  wallpaper changes and runs `settle --fast` for you (`--full` switches it to the
+  guarded form).
 
 ## Undo
 

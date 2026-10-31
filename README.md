@@ -78,6 +78,7 @@ Common options:
     --settle-min N  earliest detach, seconds (default 4)
     --settle-max N  how long to wait for displays to confirm, seconds (default 60)
     --guard N       keep the breakpoints until the bar has been quiet for N seconds
+    --fast          one-shot: repair, detach, never steal focus (what the agent runs)
     --strict        exit 3 unless every display confirmed (good for scripts)
     --json          machine-readable output for settle/fix/status/doctor
     --pid N         operate on another process (testing; needs no sudo)
@@ -113,14 +114,23 @@ external display sleeps and wakes, when the display configuration changes, or
 when the wallpaper changes (the material is generated again with the new bezel
 tint). `settle` cannot outlive that, because the objects it touched are gone.
 
-`--guard N` covers the burst: after the first repair the breakpoints stay armed
-until the bar has been quiet for N seconds, so a repair that is immediately
-followed by more rebuilds still wins, and then it detaches.
+Two knobs, both about keeping the attached window short:
 
-`t26 agent install` turns that into a daemon: it watches for screen unlock,
-display configuration changes and wallpaper changes, waits two seconds, runs
-`t26 settle --guard 8`, and goes back to sleep. It never holds the debugger while
-idle and never runs two settles at once. `sudo t26 agent uninstall` removes it.
+- `t26 settle --fast` (what the agent runs) attaches, repairs, and detaches as
+  soon as every display `t26 status` can see has a repaired bar. It never forces a
+  rebuild, so it does not steal focus, and the deep state survives ordinary
+  rebuilds, so there is nothing to wait for. Armed window: about a second.
+- `t26 settle --guard N` stays armed until the bar has been quiet for N seconds
+  after the last repair. Slower to let go, but it also catches a tree that is
+  rebuilt *after* the first repair (an external display waking up a moment
+  later). Use it when `--fast` misses a display.
+
+Both are opt-in. `t26 agent install` turns `--fast` into a daemon: it watches for
+screen unlock, display configuration changes and wallpaper changes, waits two
+seconds, runs `t26 settle --fast`, and goes back to sleep. It never holds the debugger while
+idle and never runs two settles at once. `sudo t26 agent uninstall` removes it;
+`t26 agent run` runs the watcher in the foreground, and `--full` makes it use the
+guarded settle instead.
 
 ### Do not press Ctrl-C
 

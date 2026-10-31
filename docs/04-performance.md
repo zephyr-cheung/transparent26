@@ -88,6 +88,28 @@ WindowServer repainted the backdrop after the first pill. The current strategy:
 - `T26_SETTLE_MAX` (60s by default) is the fallback: let go with a WARNING instead
   of keeping the breakpoints armed forever and dragging the machine down.
 
+## Keeping the attached window short
+
+Every second the breakpoints stay armed is a second in which a menu bar rebuild
+costs 3–4 process stops, so the whole game is *when to let go*:
+
+| Mode | Armed for | Why |
+| --- | --- | --- |
+| `fix` | forever | repairs everything, but every rebuild of the day pays 3–4 stops |
+| `settle` | ~4–5s | waits for a forced rebuild (`open -a Finder`) and for every display to be repaired twice — correct, but it steals focus |
+| `settle --guard N` | until N s of quiet | catches a tree rebuilt after the first repair, keeps the stops coming while the user is already working |
+| `settle --fast` | ~1s | repairs, then detaches as soon as every display the CLI can see has a repaired bar; no forced rebuild, no waiting |
+
+`--fast` is what the agent runs. The reason it can let go immediately is the deep
+neutralisation: a plain rebuild only resets `hidden`, while `opacity=0`,
+`contents=nil` and `filters=nil` survive, so there is nothing left to protect.
+The guard form is only needed when a *new* tree appears after the repair (an
+external display waking up a moment later).
+
+Measured on a dummy that rebuilds for 4s and then idles: `--guard 3` → 9.5s wall
+clock (attached for the whole burst plus 3s), `--fast` with two bars → 4.8s wall
+clock, of which the debugger is attached for about a second.
+
 ## What `--guard` costs
 
 `--guard N` keeps the breakpoints armed for N seconds after the last rebuild, so

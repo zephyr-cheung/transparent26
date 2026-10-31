@@ -8,6 +8,8 @@ struct EngineRequest {
     var settleMin: Int?
     var settleMax: Int?
     var guardSeconds: Int?
+    var fast: Bool
+    var displays: Int
     var log: String
     var pid: Int?
 }
@@ -36,6 +38,12 @@ enum Engine {
         if let value = request.settleMin { env["T26_SETTLE_MIN"] = "\(value)" }
         if let value = request.settleMax { env["T26_SETTLE_MAX"] = "\(value)" }
         if let value = request.guardSeconds { env["T26_GUARD"] = "\(value)" }
+        if request.displays > 0 { env["T26_DISPLAYS"] = "\(request.displays)" }
+        if request.fast {
+            env["T26_ONCE"] = "1"
+            if env["T26_GUARD"] == nil { env["T26_GUARD"] = "2" }
+            if env["T26_SETTLE_MIN"] == nil { env["T26_SETTLE_MIN"] = "1" }
+        }
         if let pid = request.pid { env["T26_PID"] = "\(pid)" }
 
         var tail = LogTail(path: request.log)

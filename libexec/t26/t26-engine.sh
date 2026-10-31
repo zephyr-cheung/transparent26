@@ -25,6 +25,8 @@
 #      T26_SETTLE_MIN  earliest detach, seconds (default 4)
 #      T26_SETTLE_MAX  give up waiting for every display to be confirmed (60)
 #      T26_LOG         log file (default /tmp/t26hook.log)
+#      T26_GUARD       stay attached until the bar is quiet this many seconds
+#      T26_ONCE        1 = one-shot: repair, brief guard, detach, no focus steal
 #      T26_QUIET       print nothing on stdout, log only (set by the CLI)
 #
 # docs: docs/01-how-it-works.md  ·  02-reverse-engineering  ·  03-dead-ends
@@ -113,9 +115,15 @@ SEP="t26: == run $(date +%s) $MODE pid $PID"
 echo "$SEP ===" >>"$LOG"
 
 # The menu bar stack is rebuilt when the front app changes, so switching to
-# Finder forces WindowServer to (re)assign layer names. `open` is used instead
-# of AppleScript because it needs no Automation (TCC) permission.
-( sleep 3; /usr/bin/open -a Finder >/dev/null 2>&1 ) &
+# Finder forces WindowServer to (re)build the bar and gives us a pill resize to
+# hang the repair on. `open` is used instead of AppleScript because it needs no
+# Automation (TCC) permission.
+#
+# One-shot runs (the agent) skip this: the event that triggered them already
+# rebuilt the bar, and stealing focus from the user is exactly the lag they feel.
+if [ "${T26_ONCE:-0}" != 1 ]; then
+    ( sleep 3; /usr/bin/open -a Finder >/dev/null 2>&1 ) &
+fi
 
 lldb -p "$PID" <"$CTL" >>"$LLDBLOG" 2>&1 &
 LLDB=$!

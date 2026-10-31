@@ -38,6 +38,8 @@ struct Options {
     var settleMin: Int?
     var settleMax: Int?
     var guardSeconds: Int?
+    var fast = false
+    var fullAgent = false
     var pid: Int?
     var log = ProcessInfo.processInfo.environment["T26_LOG"] ?? "/tmp/t26hook.log"
     var json = false
@@ -118,6 +120,10 @@ func parseArguments(_ arguments: [String]) throws -> Options {
             options.settleMax = try number(arg)
         case "--guard":
             options.guardSeconds = try number(arg)
+        case "--fast":
+            options.fast = true
+        case "--full":
+            options.fullAgent = true
         case "--pid":
             options.pid = try number(arg)
         case "--log":
@@ -190,6 +196,8 @@ OPTIONS
       --settle-max N  stop waiting for every display to report (default 60)
       --guard N       stay attached until the bar is quiet for N seconds, so a
                       repair survives the rebuild burst after an unlock/wake
+      --fast          one-shot: repair, detach, never steal focus (for the agent)
+      --full          agent: use the guarded settle instead of the one-shot repair
       --pid N         operate on another process (for testing; no sudo needed)
       --strict        exit 3 unless every attached display was confirmed
       --json          machine-readable output (settle, fix, status, doctor)

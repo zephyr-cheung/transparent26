@@ -95,9 +95,14 @@ func runEngineCommand(_ options: Options, layout: Layout) -> Never {
         out(row("target", target))
         if options.command.modifiesWindowServer {
             out(row("pattern", options.pattern ?? "MenuBarBackdrop"))
-            var budget = mode == "settle"
-                ? "\(seconds)s · detach from ≥\(options.settleMin ?? 4)s to ≤\(options.settleMax ?? 60)s"
-                : "\(seconds)s · the debugger stays attached"
+            var budget: String
+            if options.fast {
+                budget = "\(seconds)s · one-shot: detach as soon as every display is repaired"
+            } else if mode == "settle" {
+                budget = "\(seconds)s · detach from ≥\(options.settleMin ?? 4)s to ≤\(options.settleMax ?? 60)s"
+            } else {
+                budget = "\(seconds)s · the debugger stays attached"
+            }
             if mode == "settle", let guardSeconds = options.guardSeconds {
                 budget += " · guard \(guardSeconds)s of quiet"
             }
@@ -115,6 +120,8 @@ func runEngineCommand(_ options: Options, layout: Layout) -> Never {
         settleMin: options.settleMin,
         settleMax: options.settleMax,
         guardSeconds: options.guardSeconds,
+        fast: options.fast,
+        displays: Host.activeDisplays.count,
         log: options.log,
         pid: options.pid
     )
@@ -546,7 +553,7 @@ func commandVersion() -> Never {
 let agentLabel = "local.t26.agent"
 let agentPlist = "/Library/LaunchDaemons/\(agentLabel).plist"
 
-func agentPlistBody(agent: String, t26: String, guardSeconds: Int) -> String {
+func agentPlistBody(agent: String, t26: String, guardSeconds: Int, full: Bool = false) -> String {
     """
     <?xml version="1.0" encoding="UTF-8"?>
     <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -557,7 +564,7 @@ func agentPlistBody(agent: String, t26: String, guardSeconds: Int) -> String {
         <array>
             <string>\(agent)</string>
             <string>--t26</string><string>\(t26)</string>
-            <string>--guard</string><string>\(guardSeconds)</string>
+            <string>--guard</string><string>\(guardSeconds)</string>\(full ? "\n            <string>--full</string>" : "")
         </array>
         <key>RunAtLoad</key><true/>
         <key>KeepAlive</key><true/>
@@ -612,7 +619,8 @@ func commandAgent(_ options: Options, layout: Layout) -> Never {
         }
         let t26 = Host.executablePath()
         do {
-            try agentPlistBody(agent: agent, t26: t26, guardSeconds: guardSeconds)
+            try agentPlistBody(agent: agent, t26: t26, guardSeconds: guardSeconds,
+                               full: options.fullAgent)
                 .write(toFile: agentPlist, atomically: true, encoding: .utf8)
         } catch {
             die("cannot write \(agentPlist): \(error.localizedDescription)", .failed)
@@ -624,7 +632,9 @@ func commandAgent(_ options: Options, layout: Layout) -> Never {
         }
         out(ok("agent installed — repairs again after unlock / display change / wallpaper change"))
         out(row("watch", "unlock · display configuration · wallpaper store"))
-        out(row("command", "\(t26) settle --guard \(guardSeconds)"))
+        out(row("mode", options.fullAgent
+                ? "\(t26) settle --guard \(guardSeconds) (guarded)"
+                : "\(t26) settle --fast (one-shot)"))
         out(row("log", "/tmp/t26-agent.log"))
         out(row("remove", "sudo t26 agent uninstall"))
         exit(ExitCode.ok.rawValue)

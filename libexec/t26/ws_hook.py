@@ -60,6 +60,15 @@ SETTLE_MIN = float(os.environ.get("T26_SETTLE_MIN", "4"))
 # seconds, which is what makes a repair survive the burst of rebuilds that
 # follows an unlock or a display waking up.
 GUARD = float(os.environ.get("T26_GUARD", "0"))
+# One-shot mode (used by the agent): repair whatever is on screen and let go as
+# soon as the bar has been quiet for GUARD seconds. No display confirmation, no
+# forced rebuild - the event that triggered the run already rebuilt the bar, and
+# every extra second spent attached is a second of stutter for the user.
+ONCE = os.environ.get("T26_ONCE") == "1"
+# How many displays the CLI saw. In one-shot mode a run is finished as soon as
+# every one of them has a repaired bar, which keeps the attached window - and
+# therefore the stutter - as short as the event allows.
+DISPLAYS = int(os.environ.get("T26_DISPLAYS", "0"))
 
 NAME_ATTR = 0x17c  # attribute id used by -[CALayer setName:]
 
@@ -833,8 +842,16 @@ def _on_resize_pill(frame):
         too_long = age >= SETTLE_MAX
         quiet = GUARD <= 0 or S.passes == 0 or (
             time.time() - S.last_pass) >= GUARD
-        if (MODE == "settle" and not S.settled and age >= SETTLE_MIN
-                and (every_display or too_long) and quiet):
+        if ONCE:
+            # One-shot: done as soon as every display the CLI saw has a repaired
+            # bar. The deep state survives plain rebuilds, so there is nothing to
+            # wait for beyond that; the guard is only a fallback for a display
+            # that never showed up.
+            enough = S.fixed > 0 and (DISPLAYS <= 0 or len(S.roots) >= DISPLAYS)
+            ready = enough or quiet
+        else:
+            ready = quiet and (every_display or too_long)
+        if (MODE == "settle" and not S.settled and age >= SETTLE_MIN and ready):
             S.settled = True
             log("settle: %d layer(s) hidden over %d pass(es), %d/%d display(s) "
                 "confirmed%s; dropping the breakpoints so WindowServer runs at "

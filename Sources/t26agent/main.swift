@@ -16,7 +16,8 @@ import SystemConfiguration
 
 struct Options {
     var t26 = "/usr/local/bin/t26"
-    var guardSeconds = 8
+    var guardSeconds = 2
+    var full = false
     var grace = 2
     var dryRun = false
     var verbose = false
@@ -38,16 +39,20 @@ func parse(_ arguments: [String]) -> Options {
         case "--t26": index += 1; if index < arguments.count { options.t26 = arguments[index] }
         case "--guard": index += 1; if index < arguments.count { options.guardSeconds = Int(arguments[index]) ?? 8 }
         case "--grace": index += 1; if index < arguments.count { options.grace = Int(arguments[index]) ?? 2 }
+        case "--full": options.full = true
         case "--dry-run": options.dryRun = true
         case "-v", "--verbose": options.verbose = true
         case "-h", "--help":
             print("""
-            usage: t26-agent [--t26 PATH] [--guard N] [--grace N] [--dry-run] [-v]
+            usage: t26-agent [--t26 PATH] [--grace N] [--full [--guard N]] [--dry-run] [-v]
 
               watches for screen unlock, display configuration changes and
-              wallpaper changes, then runs `t26 settle --guard N`.
+              wallpaper changes, then runs `t26 settle --fast` (one-shot: repair,
+              detach, no focus stealing).
 
               --dry-run   print what would happen, run nothing
+              --full      use the guarded settle instead of the one-shot repair
+                          (stays attached longer: more reliable, more stutter)
             """)
             exit(0)
         default:
@@ -129,7 +134,7 @@ func releaseLock() {
 
 func settle(_ options: Options, reason: String) {
     if options.dryRun {
-        log("dry-run: would run \(options.t26) settle --guard \(options.guardSeconds)  (\(reason))")
+        log("dry-run: would run \(options.t26) settle \(arguments(options).joined(separator: " "))  (\(reason))")
         return
     }
     guard acquireLock() else {
@@ -137,10 +142,10 @@ func settle(_ options: Options, reason: String) {
         return
     }
     defer { releaseLock() }
-    log("\(reason): repairing (t26 settle --guard \(options.guardSeconds))")
+    log("\(reason): repairing (t26 settle \(arguments(options).joined(separator: " ")))")
     let process = Process()
     process.executableURL = URL(fileURLWithPath: options.t26)
-    process.arguments = ["settle", "--guard", "\(options.guardSeconds)"]
+    process.arguments = ["settle"] + arguments(options)
     process.environment = ProcessInfo.processInfo.environment.merging(
         ["T26_QUIET": "1"], uniquingKeysWith: { _, new in new })
     let pipe = Pipe()
@@ -163,8 +168,14 @@ func settle(_ options: Options, reason: String) {
 
 // --- main loop ------------------------------------------------------------
 
+/// One-shot by default: repair, detach, no focus stealing. `--full` falls back to
+/// the guarded settle, which stays attached for a while after the repair.
+func arguments(_ options: Options) -> [String] {
+    options.full ? ["--guard", "\(options.guardSeconds)"] : ["--fast"]
+}
+
 let options = parse(Array(CommandLine.arguments.dropFirst()))
-log("t26-agent started (t26 \(options.t26), guard \(options.guardSeconds)s, grace \(options.grace)s)")
+log("t26-agent started (t26 \(options.t26), mode \(arguments(options).joined(separator: " ")), grace \(options.grace)s)")
 
 var lastLocked = isLocked()
 var lastDisplays = displayFingerprint()
