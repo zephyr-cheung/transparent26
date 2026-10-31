@@ -66,6 +66,18 @@ fix pass 3: neutralised 1 layer(s) under 0x600001b33080 in 18 ms
    **WindowServer 身上一个断点都没有**，零开销。这才是「不卡」的根本原因——
    不是把每次暂停变快，而是让暂停次数变成 0。
 
+## 每个 pill 都修（settle 期间）
+
+早期为了省停顿时只在**重建的第一次 pill** 上修（`need_fix` 门闩），结果第二块
+显示器常常抓不到，或者被 WindowServer 在第一个 pill 之后重画回来。现在的策略是：
+
+- `settle` 期间**每一次** `resize_one_pill` 都跑那条修复表达式（一次重建 3 次，
+  每次 10–30 ms）——反正只是在「修好到撒手」这几秒里；
+- 一旦「WindowServer 报告过的每块屏的 root 都至少被修过两次」，立刻
+  `breakpoint disable` + detach，回到 0 停顿；
+- `T26_SETTLE_MAX`（默认 60s）是兜底：等不到就带一行 WARNING 撒手，而不是
+  永远挂着断点把机器拖卡。
+
 ## `settle` 为什么能撒手
 
 WindowServer 每次重建都会把 backdrop 的 `hidden` 设回 `NO`，但**不会**恢复

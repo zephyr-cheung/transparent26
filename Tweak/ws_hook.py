@@ -52,6 +52,9 @@ MAXFIX = int(os.environ.get("T26_MAXFIX", "8"))
 # rebuild that only resets `hidden` cannot bring the glass back.
 DEEP = os.environ.get("T26_DEEP", "1") != "0"   # 0 = only set hidden
 MAXHITS = int(os.environ.get("T26_MAXHITS", "4000"))
+# settle gives up waiting for a confirmed-everywhere fix after this many seconds
+SETTLE_MAX = float(os.environ.get("T26_SETTLE_MAX", "60"))
+SETTLE_MIN = float(os.environ.get("T26_SETTLE_MIN", "4"))
 
 NAME_ATTR = 0x17c  # attribute id used by -[CALayer setName:]
 
@@ -88,7 +91,9 @@ class State(object):
     t0 = time.time()
     settled = False
     last_pass = 0.0
-    need_fix = True
+    roots = {}             # root layer -> how many times we repaired it
+    displays = set()       # display ids WindowServer rebuilt the bar for
+    clean_streak = 0       # consecutive passes that needed no repair
 
 
 S = State()
@@ -244,9 +249,9 @@ def on_menu_bar_layers(frame, bp_loc, internal_dict):
     try:
         S.hits += 1
         if MODE in ("fix", "settle"):
-            # Only a flag here: doing the work in this handler would mean one
-            # expensive expression per display instead of one per rebuild.
-            S.need_fix = True
+            # Only bookkeeping here: the repair itself runs in the pill handler,
+            # which has a real CALayer. This call is made once per display.
+            S.displays.add(frame.FindRegister("x1").GetValueAsUnsigned() & 0xffffffff)
             return True
         log("update_menu_bar_layers called (display=%d)"
             % (frame.FindRegister("x1").GetValueAsUnsigned() & 0xffffffff))
@@ -580,7 +585,20 @@ def _layer_line(frame, depth, ptr, label=""):
     cf = _objc_desc(frame, ptr, "compositingFilter") or ""
     hid = _eval(frame, "(BOOL)[(id)%#x isHidden]" % ptr)
     hidden = hid.GetValueAsUnsigned() if hid.GetError().Success() else 0
+    # The expression JIT returns garbage for a `double` method result and fails
+    # on `ptr == 0`, so read opacity as float and compare as an integer.
+    op = _eval(frame, "(float)[(id)%#x opacity]" % ptr)
+    try:
+        opa = float(op.GetValue()) if op.GetError().Success() else 1.0
+    except (TypeError, ValueError):
+        opa = 1.0
+    con = _eval(frame, "(int)((unsigned long long)[(id)%#x contents] != 0)" % ptr)
+    has_con = con.GetValueAsUnsigned() if con.GetError().Success() else 0
     bits = []
+    if opa < 0.999:
+        bits.append("op=%.2f" % opa)
+    if has_con:
+        bits.append("contents")
     if bg and bg not in ("nil", "(null)"):
         bits.append("bg=" + bg[:160])
     if fl and fl not in ("nil", "(null)"):
@@ -654,21 +672,31 @@ _FIX_HEAD = ("(int)({ id p=(id)%#x;"
 # WindowServer resets `hidden` on every rebuild, so in deep mode the layer is
 # also emptied out: no contents, no filters, no opacity. Whichever of these it
 # does not reset is what keeps the bar transparent without us holding the
-# process at a breakpoint.
+# process at a breakpoint. Its children get the same treatment: on some displays
+# SLMenuBarEnhancementLayer (cf=darkenBlendMode) is what still paints the glass
+# once the parent itself is already empty.
 _FIX_DEEP = ("(int)[l{i} setOpacity:0.0]; (int)[l{i} setContents:(id)0];"
-             " (int)[l{i} setFilters:(id)0]; (int)[l{i} setBackgroundFilters:(id)0];")
+             " (int)[l{i} setFilters:(id)0];"
+             " (int)[l{i} setBackgroundFilters:(id)0];"
+             " {{ id cs{i}=(id)[l{i} sublayers];"
+             " unsigned long cc{i}=(unsigned long)[cs{i} count];"
+             " for (unsigned long q{i}=0;q{i}<cc{i};q{i}++){{"
+             " id mq{i}=(id)[cs{i} objectAtIndex:q{i}];"
+             " (int)[mq{i} setHidden:YES]; (int)[mq{i} setOpacity:0.0];"
+             " (int)[mq{i} setContents:(id)0]; (int)[mq{i} setFilters:(id)0];"
+             " (int)[mq{i} setBackgroundFilters:(id)0]; }} }}")
 
 
 def _fix_expr(ptr, deep=DEEP):
     def body(i, arr, idx, tail=""):
-        setts = "".join(_FIX_DEEP.format(i=i) for _ in range(1)) if deep else ""
+        setts = _FIX_DEEP.format(i=i) if deep else ""
         return (" id l{i}=(id)[{arr} objectAtIndex:{idx}];"
                 " id nm{i}=(id)[l{i} name];"
                 ' if ((int)[nm{i} containsString:@"' + PATTERN + '"]) {{'
-                " if ((int)[l{i} isHidden]) m++; else {{"
-                " (int)[l{i} setHidden:YES]; {setts} n++; }} {tail}"
-                " }}").format(i=i, arr=arr, idx=idx, pat=PATTERN,
-                              setts=setts, tail=tail)
+                " if ((int)[l{i} isHidden]) m++;"
+                " else {{ (int)[l{i} setHidden:YES]; n++; }}"
+                " {setts} {tail} }}").format(i=i, arr=arr, idx=idx,
+                                            setts=setts, tail=tail)
 
     inner = (" id s2=(id)[l1 sublayers]; unsigned long c2=(unsigned long)[s2 count];"
              " for (unsigned long j=0;j<c2;j++){" + body(2, "s2", "j") + " }")
@@ -728,43 +756,61 @@ def _on_resize_pill(frame):
         # The pill layer is a sibling of the backdrop, so go through the root and
         # hide every layer whose name matches. Text/icon/pill/shadow layers have
         # other names and are left alone.
-        if not S.need_fix:
-            # Guard against a rebuild that never raised the flag: re-check at
-            # most once every two seconds (one stop, so it stays imperceptible).
-            if time.time() - S.last_pass < 2.0:
-                return True             # this rebuild is already handled
-        S.need_fix = False
-        S.last_pass = time.time()
+        #
+        # This runs on *every* pill resize (three per rebuild): WindowServer may
+        # repaint/unhide the backdrop after the first pill, and each display
+        # rebuilds on its own, so "fix once per rebuild" misses displays.
         S.passes += 1
+        S.last_pass = time.time()
         n, ms, stuck = _fix_pass(frame, layer, deep=DEEP)
+        root = _root_of(frame, layer) if n > 0 else 0
         if n > 0:
             S.fixed += n
             S.matched += n
+            S.clean_streak = 0
+            if root:
+                S.roots[root] = S.roots.get(root, 0) + 1
+        else:
+            S.clean_streak += 1
         # Log the first few passes and then once every 200, so a long run stays
         # quiet without being blind.
         if S.passes <= 12 or S.passes % 200 == 0:
             S.fast_logged += 1
-            root = _root_of(frame, layer)
             if n > 0:
                 log("fix pass %d: neutralised %d layer(s) under %#x in %.0f ms"
                     " (already hidden: %d)" % (S.passes, n, root, ms, stuck))
             elif stuck:
                 log("fix pass %d: %d matching layer(s) still hidden — the fix "
-                    "survived the rebuild" % (S.passes, stuck))
+                    "survived the rebuild (%d/%d display(s) seen)"
+                    % (S.passes, stuck, len(S.roots), max(1, len(S.displays))))
             else:
-                log("fix pass %d: nothing matched '%s' under %#x (%.0f ms) — "
-                    "dumping the tree:" % (S.passes, PATTERN, root, ms))
-                _walk(frame, root, 1, [40])
+                log("fix pass %d: nothing matched '%s' (%.0f ms)"
+                    % (S.passes, PATTERN, ms))
         if MAXFIX > 0 and S.fixed >= MAXFIX:
             return not _done("neutralised %d layer(s)" % S.fixed)
-        # settle: get out of the way. Hiding the layer is a state change inside
-        # WindowServer, it does not need us to keep holding the process.
-        if (MODE == "settle" and S.fixed > 0 and S.passes >= 2
-                and time.time() - S.t0 > 3.0 and not S.settled):
+        # settle: get out of the way — but only once the fix has been shown to
+        # survive a rebuild on *every* display. Detaching after "two passes and
+        # three seconds" is how one screen ended up frosted again: its bar had
+        # only been repaired once.
+        age = time.time() - S.t0
+        # "Every display confirmed" = we have hit at least as many distinct bar
+        # roots as WindowServer told us about, and each of them has been
+        # repaired more than once (i.e. our repair beat a later rebuild).
+        every_display = (len(S.roots) >= max(1, len(S.displays))
+                         and min(S.roots.values()) >= 2)
+        too_long = age >= SETTLE_MAX
+        if (MODE == "settle" and not S.settled and age >= SETTLE_MIN
+                and (every_display or too_long)):
             S.settled = True
-            log("settle: %d layer(s) hidden after %d pass(es); dropping the "
-                "breakpoints so WindowServer runs at full speed again"
-                % (S.fixed, S.passes))
+            log("settle: %d layer(s) hidden over %d pass(es), %d/%d display(s) "
+                "confirmed; dropping the breakpoints so WindowServer runs at "
+                "full speed again"
+                % (S.fixed, S.passes, len(S.roots), max(1, len(S.displays))))
+            if not every_display:
+                log("settle: WARNING only %d/%d display(s) ever got repaired "
+                    "(waited %.0fs) — that bar may come back frosted; rerun "
+                    "with a longer T26_SETTLE_MAX if so"
+                    % (len(S.roots), max(1, len(S.displays)), age))
             # -G true keeps the process running, so this is a real detach of the
             # breakpoints, not just a message: after it, nothing stops the server.
             try:

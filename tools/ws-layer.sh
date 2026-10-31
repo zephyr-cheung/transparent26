@@ -27,6 +27,8 @@
 #      T26_PATTERN layer-name substring to act on (default MenuBarBackdrop)
 #      T26_MAXFIX  stop after this many neutralised layers (0 = never stop)
 #      T26_DEEP    also drop contents/filters/opacity (default 1)
+#      T26_SETTLE_MIN  earliest detach, seconds (default 4)
+#      T26_SETTLE_MAX  give up waiting for every display to be confirmed (default 60)
 #      T26_LOG     log file (default /tmp/t26hook.log)
 #
 # docs: docs/01-how-it-works.md  ·  02-reverse-engineering  ·  03-dead-ends

@@ -59,6 +59,8 @@ mapping process is a platform binary, but mapped file is not
    - `setContents:nil`
    - `setFilters:nil`
    - `setBackgroundFilters:nil`
+   - 以及**它的子层**（`SLMenuBarEnhancementLayer`，`cf=darkenBlendMode`）同样
+     藏掉、清空——某些显示器上，父层空了之后仍然是这个子层在画那层玻璃
 3. 返回 `新藏掉的层数 * 1000 + 本来就已经藏着的层数`。
 
 名字不匹配的层（文字、logo、阴影、pill）一个字节都不碰。
@@ -76,6 +78,11 @@ mapping process is a platform binary, but mapped file is not
   菜单栏依然是透明的。
 
 这就是 `settle` 模式，也是目前验证过「不卡 + 一直透明」的用法。
+
+注意一个坑（双屏踩到的）：`settle` 曾经在「4 个 pass + 3 秒」之后就撒手，结果
+第二块屏的 bar 只被修过**一次**就没人管了，重建之后又变成磨砂。现在 `settle`
+的退出条件是「**WindowServer 报告过的每一块显示器的 root 都至少被修过两次**」，
+或者等满 `T26_SETTLE_MAX`（默认 60s）后带警告退出。
 
 ## 用法
 
@@ -102,7 +109,9 @@ tools/ws-layer.sh --status            # 看日志尾巴
 
 环境变量：`T26_MODE` `T26_PATTERN`（默认 `MenuBarBackdrop`）`T26_MAXFIX`
 （`fix` 下默认 0 = 不停）`T26_MAXHITS`（`fix/settle` 默认 1000000）
-`T26_DEEP`（默认 1，可关掉深度中和）`T26_TREECAP` `T26_LOG` `T26_PID`。
+`T26_DEEP`（默认 1，可关掉深度中和）`T26_SETTLE_MIN`（默认 4s，最早撒手时间）
+`T26_SETTLE_MAX`（默认 60s，等不到「每块屏都确认」就带警告撒手）
+`T26_TREECAP` `T26_LOG` `T26_PID`。
 
 ## 撤销
 

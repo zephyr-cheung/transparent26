@@ -43,7 +43,8 @@ tools/ws-layer.sh --status            # 日志尾巴
 ```
 
 环境变量：`T26_PATTERN`（层名子串，默认 `MenuBarBackdrop`）、`T26_MAXFIX`、
-`T26_DEEP`（默认 1）、`T26_MAXHITS`、`T26_LOG`、`T26_PID`。
+`T26_DEEP`（默认 1）、`T26_SETTLE_MIN`（默认 4）、`T26_SETTLE_MAX`（默认 60）、
+`T26_MAXHITS`、`T26_LOG`、`T26_PID`。
 
 ### 不要 Ctrl-C
 

@@ -110,7 +110,17 @@ xref，所以只能运行时观察。
   要真停只能 `process interrupt` 或 `breakpoint disable`；
 - Python 模块文件名**不能带横线**（`ws_hook.py`，不是 `ws-hook.py`）；
 - **不要在 Python timer 线程里 detach**：那里 `lldb.debugger` 是 `None`。
-  detach 交给 shell（FIFO `/tmp/t26-ctl`）做。
+  detach 交给 shell（FIFO `/tmp/t26-ctl`）做；
+- `SBDebugger` 没有 `GetNumBreakpoints()`，要
+  `GetSelectedTarget().GetNumBreakpoints()`；
+- **表达式 JIT 的两个坑**（`EvaluateExpression` 里才这样）：
+  - 取 `double` 返回值（如 `[(id)p opacity]`）拿到的是垃圾（`5.26e-315`），
+    必须用 `(float)` 取；
+  - `[(id)p contents] == 0` 这种「指针和字面量 0 比较」会被编错
+    （`err=False val=None`），要写成
+    `(unsigned long long)[(id)p contents] != 0`；
+  - 换句话说：`setHidden:` / `setOpacity:0.0` 这些 **void 调用**是可靠的，
+    读回值不可靠——所以「写」用一条表达式做完，验证另说。
 
 ## 6. 复现路径（换机 / 换版本）
 
