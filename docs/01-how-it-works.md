@@ -1,9 +1,11 @@
 # 01 · How it works
 
-The goal: take the **Liquid Glass backdrop** off the menu bar while keeping text,
-icons, clock, status items, pills, the Apple logo and the shadow. The first
-attempt used `SLSSetMenuBarSystemOverrideAlpha(alpha=0)`, which fades the whole
-bar out — menu items included — so that route was rejected (see
+The goal: take the menu bar's **backdrop layer** off while keeping text, icons,
+clock, status items, pills, the Apple logo and the shadow. On this release that
+layer paints the plain translucent bar material; on macOS 26 it is the same layer
+that paints Liquid Glass. The first attempt used
+`SLSSetMenuBarSystemOverrideAlpha(alpha=0)`, which fades the whole bar out — menu
+items included — so that route was rejected (see
 [03-dead-ends](03-dead-ends.md)).
 
 ## The short version

@@ -1,8 +1,11 @@
 # t26 — a fully transparent macOS menu bar
 
-Neutralises the Liquid Glass backdrop of the menu bar: text, icons, clock, status
-items, pills, the Apple logo and the shadow are **all kept**, only the frosted
-panel disappears and the desktop shows through.
+Removes the menu bar's backdrop layer, so the bar becomes fully transparent: text,
+icons, clock, status items, pills, the Apple logo and the shadow are **all kept**,
+only the frosted panel behind them disappears and the desktop shows through.
+
+The layer is the same one macOS 26 uses to paint Liquid Glass — here it is the
+ordinary translucent bar material of an earlier release.
 
 It is done by operating inside WindowServer — lldb breakpoints plus a single
 Objective-C expression that clears `hidden` / `opacity` / `contents` / `filters`
