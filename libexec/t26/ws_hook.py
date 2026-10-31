@@ -323,6 +323,34 @@ def _dump_space(frame):
             words = ["%016x" % int.from_bytes(raw[i + j:i + j + 8], "little")
                      for j in range(0, 32, 8)]
             log("    +%03x  %s" % (i, " ".join(words)))
+    # Which of the space's own pointers are objects, and what are they? If one of
+    # them is the menu bar root layer, a repair needs no rebuild at all: attach,
+    # climb from the space, detach - no focus stealing, no waiting for an event.
+    for off in (0x18, 0x20, 0xb8, 0xc8, 0xd8, 0xe0, 0xf0):
+        err = lldb.SBError()
+        raw = proc.ReadMemory(ptrs["space"] + off, 8, err)
+        if not raw:
+            continue
+        val = int.from_bytes(bytes(raw), "little") if not hasattr(raw, "GetUnsignedInt64") \
+            else raw.GetUnsignedInt64(err, 0)
+        if not val:
+            continue
+        log("  probe +%#x = %#x" % (off, val))
+        cls = _objc_class(frame, val)
+        log("    class: %s" % cls)
+        if cls == "CAContext":
+            root = _eval(frame, "(id)[(id)%#x layer]" % val)
+            r = root.GetValueAsUnsigned() if root.GetError().Success() else 0
+            log("    layer: %#x  class=%s name=%r"
+                % (r, _objc_class(frame, r) if r else "-",
+                   _objc_str(frame, r, "name") if r else None))
+            if r:
+                subs = _subarray(frame, r)
+                cnt = _count(frame, subs) if subs else 0
+                for i in range(min(cnt, 12)):
+                    ch = _layer_at(frame, subs, i)
+                    log("      sub %d: %#x %r" % (i, ch, _objc_str(frame, ch, "name")))
+
     if S.space_logged >= 4:
         return not _done("dumped %d menu bar call(s)" % S.space_logged)
     return True

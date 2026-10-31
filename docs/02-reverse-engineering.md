@@ -155,3 +155,35 @@ The strings are present in `__cstring` (`0x18602b360` + offset), but as noted in
    `setHidden:YES` would hide the text too — in that case switch to "clear
    contents/filters only, never hide", i.e. `T26_DEEP=0` with `setContents:nil`,
    and verify again.
+
+## 7. The rebuild-free entry point (found last)
+
+`PKGManagedMenuSpace` is the long-lived side of the menu bar: the same pointer
+survives every layer rebuild, and one of its fields walks straight to the tree.
+
+```
+space +0xe0   -> CAContext
+-[CAContext layer] -> 'SLMenuBarOffScreenRootLayer'  (a real CALayer)
+```
+
+Found with `t26 space`, which dumps the space and then probes its pointer fields
+with `className` / `name` (read-only):
+
+```
+space +0x18/+0x20  0x600002996fd0   not an object (C++)
+space +0xb8        IOSurface        the bar's surface
+space +0xe0        CAContext        -> layer = SLMenuBarOffScreenRootLayer
+space +0xf0        __NSCFType
+```
+
+Why it matters: every previous route needed a menu bar *rebuild* to get a
+`resize_one_pill` frame, which is why `settle --fast` reports "nothing to repair"
+when the tree was rebuilt *before* the attach (a wallpaper change), and why the
+full settle has to force a rebuild with `open -a Finder` (focus stealing). With
+the context's root layer the repair can start from the space at any time.
+
+Still to do: cache the space pointer per WindowServer lifetime (`/tmp/t26-space`,
+validated by checking that `+0xe0` is a `CAContext` whose layer name starts with
+`SLMenuBar`), start the tree walk from that root instead of from a pill, and
+confirm that neutralising the backdrop under the off-screen root also clears the
+on-screen bar.
