@@ -8,6 +8,12 @@ logo、阴影**全部保留**，只是那块毛玻璃消失，露出桌面。
 连它的子层（`SLMenuBarEnhancementLayer`）也一起清。**不往进程里加载任何代码**
 （AMFI 的 platform-binary 限制拦不到），**不写任何磁盘状态**——注销或重启即完全恢复。
 
+![菜单栏透出壁纸：文字、图标、状态项、pill、阴影全在，只有毛玻璃背板没了](docs/example.png)
+
+macOS 14.6.1 / MacBook Air M1，跑完 `sudo t26 settle` 之后的样子。整条菜单栏没有
+背板，壁纸直接透上来；苹果 logo、`SodaM`/`Window` 菜单、右侧的状态项和时间一个
+都没少——被中和掉的只是那块毛玻璃图层。
+
 ```
 $ sudo t26 settle
 ```
