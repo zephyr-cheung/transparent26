@@ -43,6 +43,9 @@ enum Engine {
             env["T26_ONCE"] = "1"
             if env["T26_GUARD"] == nil { env["T26_GUARD"] = "2" }
             if env["T26_SETTLE_MIN"] == nil { env["T26_SETTLE_MIN"] = "1" }
+            // A one-shot run has no reason to sit attached for long: the hook
+            // gives up on its own after a few seconds, this is only the backstop.
+            if request.seconds > 15 { env["T26_SECS"] = "15" }
         }
         if let pid = request.pid { env["T26_PID"] = "\(pid)" }
 

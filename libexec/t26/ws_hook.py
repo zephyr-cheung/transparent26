@@ -748,18 +748,40 @@ def _fix_pass(frame, ptr, deep=False):
 
 
 def _guard_watch():
-    """Let go once the bar has been quiet for GUARD seconds.
+    """Decide on the clock, not on breakpoint hits.
 
     The settle verdict can normally only be evaluated inside a breakpoint
-    callback, i.e. when the bar *is* being rebuilt. After an unlock burst the
-    rebuilds stop and nothing would ever evaluate it again, so a guard run needs
-    its own clock. This thread only writes the verdict; the detach itself is the
-    shell's job (FIFO), because lldb.debugger is not usable off-thread.
+    callback, i.e. when the bar *is* being rebuilt - and a run that never sees a
+    rebuild would then sit attached until the whole time budget ran out, stalling
+    WindowServer for nothing. So the decision also has its own clock:
+
+    - one-shot: done once every display has a repaired bar, or after a short
+      deadline when nothing needed repairing at all;
+    - guard: done once the bar has been quiet for GUARD seconds.
+
+    Only the verdict is written here; detaching is the shell's job, because
+    lldb.debugger is not usable off-thread.
     """
+    limit = SETTLE_MIN + (GUARD if GUARD > 0 else 0) + 1.5
     while not S.done:
         time.sleep(0.5)
         try:
-            if S.passes and (time.time() - S.last_pass) >= GUARD:
+            age = time.time() - S.t0
+            if ONCE:
+                enough = S.fixed > 0 and (DISPLAYS <= 0 or len(S.roots) >= DISPLAYS)
+                if enough or age >= limit:
+                    S.settled = True
+                    if S.fixed:
+                        log("settle: one-shot — %d layer(s) on %d/%d display(s) "
+                            "repaired, %.1fs attached"
+                            % (S.fixed, len(S.roots), DISPLAYS or len(S.roots), age))
+                        _done("settled (fast)")
+                    else:
+                        log("settle: one-shot — no menu bar rebuild in %.1fs, "
+                            "nothing to repair" % age)
+                        _done("nothing to repair (fast)")
+                    return
+            elif S.passes and (time.time() - S.last_pass) >= GUARD:
                 S.settled = True
                 log("settle: guard — no rebuild for %.0fs after %d pass(es), "
                     "%d layer(s) hidden; dropping the breakpoints"

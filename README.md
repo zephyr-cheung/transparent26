@@ -125,12 +125,18 @@ Two knobs, both about keeping the attached window short:
   rebuilt *after* the first repair (an external display waking up a moment
   later). Use it when `--fast` misses a display.
 
-Both are opt-in. `t26 agent install` turns `--fast` into a daemon: it watches for
-screen unlock, display configuration changes and wallpaper changes, waits two
-seconds, runs `t26 settle --fast`, and goes back to sleep. It never holds the debugger while
+Both are opt-in. `t26 agent install` turns `--fast` into a daemon: it watches for screen unlock
+and wallpaper changes, waits two seconds, runs `t26 settle --fast`, and goes back
+to sleep. Each run is bounded: it detaches as soon as every display it can see is
+repaired, and gives up after ~5s when nothing rebuilt at all. A 90s cooldown
+stops two runs from chasing each other, and the wallpaper trigger compares the
+*contents* of the wallpaper store, not its mtime — macOS rewrites that file for
+its own reasons, and using mtime made the agent repair in a loop. It never holds the debugger while
 idle and never runs two settles at once. `sudo t26 agent uninstall` removes it;
 `t26 agent run` runs the watcher in the foreground, `--full` makes it use the
-guarded settle, and `--no-boot` stops it from repairing at startup/login.
+guarded settle, `--no-boot` stops it from repairing at startup/login, and
+`--events unlock,wallpaper,display` adds display-configuration changes (off by
+default: a display falling asleep looks like one).
 
 The daemon is a `/Library/LaunchDaemons/local.t26.agent.plist` with `RunAtLoad`
 and `KeepAlive`, so launchd starts it at boot, before anyone logs in. It repairs

@@ -156,8 +156,8 @@ Three answers, all shipped:
   focus stealing. This is the cheapest form: ~1s attached.
 - `t26 settle --guard N` — stay armed until the bar has been quiet for N seconds
   after the last repair; catches a tree rebuilt *after* the first repair.
-- `t26 agent install` — a launchd watcher that notices unlock / display /
-  wallpaper changes and runs `settle --fast` for you (`--full` switches it to the
+- `t26 agent install` — a launchd watcher that notices unlock / wallpaper changes
+  and runs `settle --fast` for you (`--full` switches it to the
   guarded form). `RunAtLoad` + `KeepAlive` make it start at boot, and it repairs
   once when a console session appears, so a reboot ends with a transparent bar
   without any manual step.

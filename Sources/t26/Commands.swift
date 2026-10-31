@@ -168,6 +168,12 @@ func finish(_ options: Options, _ outcome: EngineOutcome, layout: Layout) -> Nev
                 notes.append(Style.dim("  give it more time: sudo t26 settle -s 90 --settle-max 90"))
                 if options.strict { code = .blocked }
             }
+        } else if options.fast {
+            // The agent's normal case: nothing rebuilt while we were attached, so
+            // there was nothing to repair. Not an error.
+            headline = ok("nothing to repair — the bar did not rebuild while attached")
+            rows.append(("attached", elapsed(outcome.seconds)))
+            rows.append(("undo", "nothing was changed"))
         } else {
             code = .failed
             headline = bad("no matching backdrop layer was neutralised (\(elapsed(outcome.seconds)))")
