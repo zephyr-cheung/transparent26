@@ -1,24 +1,25 @@
 import Foundation
 
 enum Command: String {
-    case settle, fix, tree, probe, hunt, theme, space
+    case settle, fix, now, tree, probe, hunt, theme, space
     case status, doctor, logs, abort, agent
     case version, help
 
     var needsWindowServer: Bool {
         switch self {
-        case .settle, .fix, .tree, .probe, .hunt, .theme, .space, .abort: return true
+        case .settle, .fix, .now, .tree, .probe, .hunt, .theme, .space, .abort: return true
         default: return false
         }
     }
 
     var modifiesWindowServer: Bool {
-        self == .settle || self == .fix
+        self == .settle || self == .fix || self == .now
     }
 
     var defaultSeconds: Int {
         switch self {
         case .settle: return 40
+        case .now: return 20
         case .fix: return 900
         case .tree, .space: return 25
         case .probe: return 25
@@ -176,6 +177,7 @@ nothing is written outside /tmp, so logging out or rebooting undoes everything.
 USAGE
   sudo t26 settle [options]        make the menu bar transparent (recommended)
   sudo t26 fix [options]           stay attached, repair every rebuild
+  sudo t26 now                     repair right away, no rebuild needed
   sudo t26 tree                    dump the live menu bar CALayer tree
   sudo t26 probe                   log the layer names WindowServer assigns
   sudo t26 hunt                    log the setters the menu bar code calls

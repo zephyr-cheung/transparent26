@@ -48,7 +48,7 @@ MODE=settle
 SECS=""
 while [ $# -gt 0 ]; do
     case "$1" in
-        probe|hunt|theme|tree|space|fix|settle) MODE="$1" ;;
+        probe|hunt|theme|tree|space|now|fix|settle) MODE="$1" ;;
         -s|--seconds) shift; SECS="${1:-}" ;;
         -h|--help)
             say "t26-engine is an internal helper; use: t26 help"
@@ -86,6 +86,8 @@ elif [ "$MODE" = settle ]; then
     say "    if the glass returns, WindowServer repaints it on every rebuild."
 elif [ "$MODE" = tree ]; then
     say "    nothing is modified; the menu bar CALayer tree is only dumped"
+elif [ "$MODE" = now ]; then
+    say "    repair immediately from the menu bar space, no rebuild needed"
 elif [ "$MODE" = space ]; then
     say "    nothing is modified; the long-lived menu bar space / info structs"
     say "    are only dumped (diff a locked run against an unlocked one)"
@@ -124,7 +126,7 @@ echo "$SEP ===" >>"$LOG"
 #
 # One-shot runs (the agent) skip this: the event that triggered them already
 # rebuilt the bar, and stealing focus from the user is exactly the lag they feel.
-if [ "${T26_ONCE:-0}" != 1 ]; then
+if [ "${T26_ONCE:-0}" != 1 ] && [ "$MODE" != now ] && [ "$MODE" != space ]; then
     ( sleep 3; /usr/bin/open -a Finder >/dev/null 2>&1 ) &
 fi
 
