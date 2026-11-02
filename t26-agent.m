@@ -26,6 +26,37 @@ static void display_changed(CGDirectDisplayID display,
         post(NOTIFY_REAPPLY);
 }
 
+static CGDirectDisplayID seen_displays[8];
+static uint32_t seen_display_count = 0;
+static int have_display_snapshot = 0;
+
+// CGDisplayRegisterReconfigurationCallback can miss an internal display
+// coming online on some builds.  Poll the cheap topology snapshot as a
+// fallback; a count/ID change means the menu bar may have a new backdrop.
+static void check_display_topology(void) {
+    CGDirectDisplayID ids[8] = {0};
+    uint32_t n = 0;
+    if (CGGetOnlineDisplayList(8, ids, &n) != kCGErrorSuccess) return;
+
+    int changed = 0;
+    if (have_display_snapshot) {
+        if (n != seen_display_count) {
+            changed = 1;
+        } else {
+            for (uint32_t i = 0; i < n; i++) {
+                if (ids[i] != seen_displays[i]) { changed = 1; break; }
+            }
+        }
+    }
+    if (changed)
+        post(NOTIFY_RESCAN);
+
+    seen_display_count = n;
+    for (uint32_t i = 0; i < n && i < 8; i++)
+        seen_displays[i] = ids[i];
+    have_display_snapshot = 1;
+}
+
 static void observe(NSNotificationCenter *nc, NSNotificationName name, const char *note) {
     [nc addObserverForName:name
                     object:nil
@@ -75,8 +106,18 @@ int main(void) {
                     }];
 
         CGDisplayRegisterReconfigurationCallback(display_changed, NULL);
+        check_display_topology();
+        [NSTimer scheduledTimerWithTimeInterval:2.0
+                                        repeats:YES
+                                          block:^(NSTimer *timer) {
+            (void)timer;
+            check_display_topology();
+        }];
 
-        post(NOTIFY_REAPPLY);
+        // Startup is also when a late-created backdrop handle can be missed.
+        // A full rescan here is cheap relative to a GUI login and is followed
+        // by t26d's verification scans.
+        post(NOTIFY_RESCAN);
         [[NSRunLoop currentRunLoop] run];
     }
     return 0;

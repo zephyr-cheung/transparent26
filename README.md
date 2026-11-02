@@ -110,7 +110,8 @@ string or the render-layer layout changed — see docs/02.
   of backdrop `CA::Render::Handle` objects, re-applies when the menu bar is rebuilt;
 - `t26-agent` — per-user `LaunchAgent` (Objective-C, because it uses
   `NSWorkspace`); turns front-app, Space, wallpaper, session, display and
-  lock/unlock notifications into Darwin notifications for `t26d`.
+  lock/unlock notifications into Darwin notifications for `t26d`, and polls the
+  online display list as a fallback for missed hotplug callbacks.
 
 The daemon does not scan on every event. It reads each cached handle's current
 render layer (`handle + 0x10`) and that layer's fields, and writes only when the

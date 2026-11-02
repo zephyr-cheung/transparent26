@@ -20,6 +20,11 @@ runs in the user's Aqua session, where `NSWorkspace` and distributed
 notifications are available. The agent never scans and never writes; it only
 posts `com.zephyr.t26.reapply` or `com.zephyr.t26.rescan`.
 
+A display can come online without a reliable CoreGraphics reconfiguration
+callback. The agent therefore polls `CGGetOnlineDisplayList` every two seconds;
+a count or ID change posts `rescan`. It also posts `rescan` once at startup so a
+backdrop handle created late during login is discovered.
+
 ## Events
 
 | source | notification |
