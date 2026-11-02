@@ -48,6 +48,17 @@ int main(void) {
         observe(nc, NSWorkspaceScreensDidWakeNotification, NOTIFY_RESCAN);
         observe(nc, NSWorkspaceDidWakeNotification, NOTIFY_RESCAN);
 
+        // Wallpaper changes rebuild the menu bar, but AppKit has no public
+        // desktop-image notification on this macOS version.  WallpaperAgent
+        // posts this legacy distributed notification instead.
+        [dc addObserverForName:@"com.apple.desktop"
+                        object:nil
+                         queue:[NSOperationQueue mainQueue]
+                    usingBlock:^(NSNotification *n) {
+                        (void)n;
+                        post(NOTIFY_RESCAN);
+                    }];
+
         [dc addObserverForName:@"com.apple.screenIsUnlocked"
                         object:nil
                          queue:[NSOperationQueue mainQueue]

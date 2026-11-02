@@ -43,7 +43,7 @@ static void logmsg(const char *fmt, ...) {
     fflush(stderr);
 }
 
-static void schedule(int rescan);
+static void schedule_apply(int rescan);
 
 static int ensure_task(void) {
     pid_t pid = t26_window_server_pid();
@@ -86,7 +86,7 @@ static void apply_now(int rescan) {
     if (ensure_task() != 0) {
         logmsg("WindowServer/task_for_pid not available yet");
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5ull * NSEC_PER_SEC), q, ^{
-            schedule(1);
+            schedule_apply(1);
         });
         return;
     }
@@ -106,14 +106,14 @@ static void apply_now(int rescan) {
             int wait = (int)(MIN_RESCAN_SEC - (now - last_scan));
             logmsg("rescan rate-limited; retry in %ds", wait);
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)wait * NSEC_PER_SEC), q, ^{
-                schedule(1);
+                schedule_apply(1);
             });
             return;
         }
         scan_and_cache();
         if (handle_n == 0) {
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 10ull * NSEC_PER_SEC), q, ^{
-                schedule(1);
+                schedule_apply(1);
             });
             return;
         }
@@ -126,7 +126,7 @@ static void apply_now(int rescan) {
             logmsg("handle %#llx invalid; rescanning", (unsigned long long)handles[i]);
             handle_n = 0;
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 2ull * NSEC_PER_SEC), q, ^{
-                schedule(1);
+                schedule_apply(1);
             });
             return;
         }
@@ -150,7 +150,7 @@ static void apply_now(int rescan) {
     }
 }
 
-static void schedule(int rescan) {
+static void schedule_apply(int rescan) {
     if (rescan) pending_rescan = 1;
     if (scheduled) return;
     scheduled = 1;
@@ -161,6 +161,26 @@ static void schedule(int rescan) {
         pending_rescan = 0;
         apply_now(force);
     });
+}
+
+// A wallpaper/display rebuild can create the new render tree after the first
+// rescan has already run.  Verify a few times over the next minute.  Only an
+// external rescan arms these; retries do not, so this cannot loop.  This keeps
+// the steady-state heartbeat free of heap scans.
+static void schedule(int rescan) {
+    static const int settle[] = {10, 30, 60};
+    if (rescan) {
+        static unsigned generation;
+        unsigned gen = ++generation;
+        for (size_t i = 0; i < sizeof settle / sizeof settle[0]; i++) {
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                                         (int64_t)settle[i] * NSEC_PER_SEC), q, ^{
+                if (gen != generation) return;
+                schedule_apply(1);
+            });
+        }
+    }
+    schedule_apply(rescan);
 }
 
 int main(void) {
@@ -192,13 +212,13 @@ int main(void) {
                               (uint64_t)HEARTBEAT_SEC * NSEC_PER_SEC,
                               5ull * NSEC_PER_SEC);
     dispatch_source_set_event_handler(timer, ^{
-        schedule(0);
+        schedule_apply(0);
     });
     dispatch_resume(timer);
 
     logmsg("started");
     dispatch_async(q, ^{
-        schedule(1);
+        schedule_apply(1);
     });
     dispatch_main();
     return 0;

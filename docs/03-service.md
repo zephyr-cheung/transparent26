@@ -26,6 +26,7 @@ posts `com.zephyr.t26.reapply` or `com.zephyr.t26.rescan`.
 | --- | --- |
 | frontmost application change | `reapply` |
 | active Space change | `reapply` |
+| wallpaper change | `rescan` |
 | session became active | `rescan` |
 | screens wake / system wake | `rescan` |
 | screen unlocked | `rescan` |
@@ -38,9 +39,9 @@ full scan".
 The daemon also has a 60-second heartbeat, but it is a cheap `reapply`: it reads
 the cached handles and their current render layers, and does not scan the heap.
 A full scan is reserved for startup, WindowServer restart, an explicit `rescan`,
-or an invalid cached handle. This is the safety net for events the agent cannot
-see (notably some wallpaper changes) and for a missed notification. It is
-deliberately not a one-second poll.
+an invalid cached handle, or the short verification sequence after a `rescan`.
+This is the safety net for events the agent cannot see and for a missed
+notification. It is deliberately not a one-second poll.
 
 ## Cache and repair
 
@@ -77,6 +78,11 @@ queue, so a burst of notifications becomes one repair. Full rescans are also
 rate-limited to one per 10 seconds (`MIN_RESCAN_SEC` in `t26d.c`); the cheap
 `reapply` path is not limited.
 
+A wallpaper change is asynchronous: the first scan can still see the old handle
+tree. An explicit `rescan` therefore also schedules verification scans at 10,
+30 and 60 seconds. They are cancelled and re-armed by a newer rescan, so a burst
+of events does not multiply scans.
+
 ## Why this is cheaper than `sudo t26` on a timer
 
 - no `sudo`/process startup per event;
@@ -85,10 +91,11 @@ rate-limited to one per 10 seconds (`MIN_RESCAN_SEC` in `t26d.c`); the cheap
 - only a few 8-byte reads/writes happen on the common path;
 - the daemon sleeps in `dispatch_main()` when nothing happens.
 
-The remaining cost is a full scan on startup, WindowServer restart, or an
-explicit `rescan` (display/lock/wake/wallpaper events are rate-limited to one
-scan per 10 s). The 60 s heartbeat only reads handles. If even that is too much
-on a slow machine, raise `HEARTBEAT_SEC` in `t26d.c`.
+The remaining cost is a full scan on startup, WindowServer restart, an explicit
+`rescan`, or the 10/30/60 s verification sequence after one. Display, lock, wake
+and wallpaper changes are relatively rare; ordinary app/Space switches and the
+60 s heartbeat only read handles. If even that is too much on a slow machine,
+raise `HEARTBEAT_SEC` in `t26d.c`.
 
 ## Install / control
 
