@@ -131,7 +131,8 @@ the running WindowServer process:
 
 The original contents pointer is not saved, so a future `disable` command would
 need either a state file (with the caveat that the layer may be rebuilt) or the
-setter path from the `main` branch (which needs a debugger or code execution).
+setter path used by the earlier lldb-based implementation (which needs a
+debugger or code execution).
 
 ## 7. Cost
 

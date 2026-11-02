@@ -115,9 +115,9 @@ several backdrop layers; apply to all.
 If no layer is found, the name may no longer be copied to the render layer. In
 that case fall back to the mutable path: find the `CALayer` whose attr 380 name
 is the CFString, get `CA::Layer = CALayer + 0x10`, and resolve its current render
-layer through `CA::Render::Handle`/`CA::Render::Context` (the old `main` branch
-docs/02 §9 and §18.3 describe the CALayer scan; `CA::Render::Handle + 0x10` is
-the current render layer). Do not guess a pointer offset without validating it.
+layer through `CA::Render::Handle`/`CA::Render::Context` (the earlier
+reverse-engineering notes in git history describe the CALayer scan;
+`CA::Render::Handle + 0x10` is the current render layer). Do not guess a pointer offset without validating it.
 
 ## 3. Find the correct hidden flag
 
@@ -131,8 +131,8 @@ On 14.6.1 the measurement was:
    - `+0x24` qword `0xc2900930000f9f11` on two layers, `0xc2900934000f9f11` on one
      already-hidden layer.
 2. Use the known-good ObjC setters to make the bar genuinely transparent. The
-   old `main` branch has `tools/t26-fast.c` / `bin/t26-fast hide` for exactly
-   this; it uses lldb and stops WindowServer ~300 ms. The core expression is:
+   earlier lldb-based helper did exactly this; it stops WindowServer for ~300 ms.
+   The equivalent lldb expression is:
 
    ```objc
    ({ void *p[] = { /* backdrop CALayer addresses */ };
@@ -203,7 +203,7 @@ path; the measurement in §3 is the only place lldb is appropriate.
 The old contents object is not released. This leaks one material image for the
 session, but it keeps the write path free of QuartzCore code. If a future version
 requires a refcount-safe write, the setter/`IOMemoryDescriptor`/code-execution
-route from `main` history is the alternative, with all its costs.
+route from the earlier lldb/kext history is the alternative, with all its costs.
 
 ## 6. Porting checklist
 

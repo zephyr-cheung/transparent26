@@ -1,11 +1,14 @@
-# t26 — a fully transparent macOS menu bar (C / mach_vm)
+# t26 — a macOS 26-style transparent status bar (C / mach_vm)
 
 Removes the menu bar's backdrop layer, so the bar becomes fully transparent: text,
 icons, clock, status items, pills, the Apple logo and the shadow are **all kept**,
 only the frosted panel behind them disappears and the desktop shows through.
 
-This branch is a rewrite of the earlier `lldb`/agent design on `main`. It is a
-single C program with no debugger, no daemon and no kernel extension:
+`t26` means macOS 26: the goal is the fully transparent status bar of macOS 26,
+brought to earlier releases by removing the menu bar backdrop.
+
+It replaces the earlier `lldb`/agent design with a single C program. No debugger,
+no daemon and no kernel extension:
 
 ```sh
 sudo t26
@@ -101,13 +104,3 @@ docs/02-reverse-engineering.md
                          how to find the layer, flags and offsets on a new macOS
 docs/example.png         screenshot of the target effect
 ```
-
-## What changed from main
-
-`main` used lldb to run `-[CALayer setHidden:]` / `setOpacity:` / `setContents:`
-inside WindowServer (and an agent to repeat it). That needs a process stop, which
-is the stutter this branch removes.
-
-This branch instead edits the render tree directly. It does not use lldb, ptrace,
-`thread_set_state`, a kernel extension, or any injected code. The earlier kext
-experiments are not part of this branch.
