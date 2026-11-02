@@ -1,279 +1,39 @@
 // t26 — transparent menu bar through WindowServer's committed render tree.
 //
-//   sudo t26            remove the menu bar backdrop (keep text/icons)
+//   sudo t26                         apply now (one-shot)
+//   sudo t26 service install         install t26d + t26-agent via launchd
+//   sudo t26 service uninstall       remove the service
+//        t26 service status          show the launchd state
 //
-// No lldb, no ptrace, no kernel extension, no process suspension.  The tool
-// reads WindowServer's memory (task_for_pid + mach_vm_read_overwrite), finds
-// the CA::Render::Layer whose CA::Render::String name is
-// "SLMenuBarBackdropLayer", and writes two fields with mach_vm_write:
-//
-//     CA::Render::Layer + 0x60 = 0                (contents)
-//     CA::Render::Layer + 0x24 |= 1 << 34         (hidden/backdrop-only)
-//
-// Undo is log out / restart WindowServer (there is no disable command).
-// Requires root and SIP disabled (task_for_pid on WindowServer).
+// No lldb, no ptrace, no kernel extension, no process suspension.  The scan and
+// the two writes live in t26-core.c; this file is the CLI and service installer.
+#include "t26-core.h"
+
 #include <mach/mach.h>
-#include <mach/mach_vm.h>
+#include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
-#include <sys/sysctl.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
-#define MAX_LAYERS 8
-#define NAME "SLMenuBarBackdropLayer"
-#define NAME_LEN 22
-#define HIDDEN_BIT 34
+#define DAEMON_LABEL "com.zephyr.t26d"
+#define AGENT_LABEL  "com.zephyr.t26agent"
+#define DAEMON_PLIST "/Library/LaunchDaemons/" DAEMON_LABEL ".plist"
+#define AGENT_PLIST  "/Library/LaunchAgents/"  AGENT_LABEL  ".plist"
+#define DAEMON_PATH  "/usr/local/libexec/t26/t26d"
+#define AGENT_PATH   "/usr/local/libexec/t26/t26-agent"
 
-#define OFF_CONTENTS 0x60
-#define OFF_FLAGS    0x24
-#define OFF_NAME     0x78
-#define OFF_HANDLE   0x90
-
-#define SCAN_DEADLINE 60
-
-static int is_user_ptr(uint64_t p) {
-    return p >= 0x100000000ULL && p < 0x800000000000ULL;
-}
-
-static int read_mem(task_t task, uint64_t addr, void *buf, size_t len) {
-    mach_vm_size_t got = 0;
-    kern_return_t kr = mach_vm_read_overwrite(task, addr, len,
-                                              (mach_vm_address_t)buf, &got);
-    return (kr == KERN_SUCCESS && got == len) ? 0 : -1;
-}
-
-static int write_mem(task_t task, uint64_t addr, const void *buf, size_t len) {
-    return mach_vm_write(task, addr, (vm_offset_t)buf,
-                         (mach_msg_type_number_t)len) == KERN_SUCCESS ? 0 : -1;
-}
-
-static pid_t window_server_pid(void) {
-    int pid = 0;
-    size_t size = sizeof pid;
-    if (sysctlbyname("kern.windowserver_pid", &pid, &size, NULL, 0) == 0 && pid)
-        return (pid_t)pid;
-    FILE *p = popen("pgrep -x WindowServer", "r");
-    if (p) {
-        if (fscanf(p, "%d", &pid) != 1) pid = 0;
-        pclose(p);
-    }
-    return (pid_t)pid;
-}
-
-static const unsigned char *find_sub(const unsigned char *buf, size_t len,
-                                     const char *needle, size_t nlen) {
-    const unsigned char *p = buf;
-    size_t left = len;
-    if (nlen == 0 || len < nlen) return NULL;
-    while (left >= nlen) {
-        const unsigned char *hit = memchr(p, (unsigned char)needle[0],
-                                          left - nlen + 1);
-        if (!hit) return NULL;
-        if (!memcmp(hit, needle, nlen)) return hit;
-        left -= (size_t)(hit - p) + 1;
-        p = hit + 1;
-    }
-    return NULL;
-}
-
-// Find committed CA::Render::Layer objects whose +0x78 name is the menu bar
-// backdrop.  The name is a CA::Render::String with inline characters at +0x1c;
-// find those strings first, then pointers to them.
-static int find_render_layers(task_t task, uint64_t *out, int max, double *secs) {
-    uint64_t strings[64];
-    int nstrings = 0, found = 0;
-    const size_t chunk = 16u << 20;
-    const size_t overlap = 64;
-    unsigned char *buf = malloc(chunk);
-    time_t deadline = time(NULL) + SCAN_DEADLINE;
-    mach_vm_address_t addr = 0;
-    struct timeval tv0, tv1;
-    gettimeofday(&tv0, NULL);
-
-    if (!buf) return -1;
-
-    // Pass 1: CA::Render::String("SLMenuBarBackdropLayer").
-    while (1) {
-        mach_vm_size_t size = 0;
-        vm_region_basic_info_data_64_t info;
-        mach_msg_type_number_t count = VM_REGION_BASIC_INFO_COUNT_64;
-        mach_port_t object = MACH_PORT_NULL;
-        if (time(NULL) > deadline) { free(buf); return -1; }
-        if (mach_vm_region(task, &addr, &size, VM_REGION_BASIC_INFO_64,
-                           (vm_region_info_t)&info, &count, &object) != KERN_SUCCESS)
-            break;
-        if ((info.protection & (VM_PROT_READ | VM_PROT_WRITE)) ==
-            (VM_PROT_READ | VM_PROT_WRITE) && size <= (1ull << 30)) {
-            uint64_t off = 0;
-            while (off < size) {
-                size_t len = (size_t)((size - off < chunk) ? (size - off) : chunk);
-                mach_vm_size_t got = 0;
-                if (mach_vm_read_overwrite(task, addr + off, len,
-                                           (mach_vm_address_t)buf, &got) == KERN_SUCCESS) {
-                    const unsigned char *p = buf;
-                    size_t left = (size_t)got;
-                    for (;;) {
-                        const unsigned char *hit = find_sub(p, left, NAME, NAME_LEN);
-                        uint64_t saddr, sobj, hdr[4] = {0};
-                        if (!hit) break;
-                        saddr = addr + off + (uint64_t)(hit - buf);
-                        sobj = saddr - 0x1c;
-                        if (is_user_ptr(sobj) && !read_mem(task, sobj, hdr, sizeof hdr)) {
-                            uint32_t ref = (uint32_t)hdr[1];
-                            uint32_t type = (uint32_t)(hdr[1] >> 32);
-                            uint32_t len32 = (uint32_t)hdr[3];
-                            if (ref > 0 && type == 0x31 && len32 == NAME_LEN) {
-                                int dup = 0;
-                                for (int i = 0; i < nstrings; i++)
-                                    if (strings[i] == sobj) { dup = 1; break; }
-                                if (!dup && nstrings < 64) strings[nstrings++] = sobj;
-                            }
-                        }
-                        {
-                            size_t adv = (size_t)(hit - p) + 1;
-                            p += adv;
-                            left -= adv;
-                        }
-                    }
-                }
-                if (len <= overlap) break;
-                off += len - overlap;
-            }
-        }
-        addr += size;
-    }
-    if (nstrings == 0) { free(buf); return 0; }
-
-    // Pass 2: pointers to those strings; render layer = pointer - 0x78.
-    addr = 0;
-    deadline = time(NULL) + SCAN_DEADLINE;
-    while (1) {
-        mach_vm_size_t size = 0;
-        vm_region_basic_info_data_64_t info;
-        mach_msg_type_number_t count = VM_REGION_BASIC_INFO_COUNT_64;
-        mach_port_t object = MACH_PORT_NULL;
-        if (time(NULL) > deadline) { free(buf); return -1; }
-        if (mach_vm_region(task, &addr, &size, VM_REGION_BASIC_INFO_64,
-                           (vm_region_info_t)&info, &count, &object) != KERN_SUCCESS)
-            break;
-        if ((info.protection & (VM_PROT_READ | VM_PROT_WRITE)) ==
-            (VM_PROT_READ | VM_PROT_WRITE) && size <= (1ull << 30)) {
-            for (uint64_t off = 0; off < size; off += chunk) {
-                size_t len = (size_t)((size - off < chunk) ? (size - off) : chunk);
-                mach_vm_size_t got = 0;
-                if (mach_vm_read_overwrite(task, addr + off, len,
-                                           (mach_vm_address_t)buf, &got) != KERN_SUCCESS)
-                    continue;
-                for (size_t i = 0; i + 8 <= got; i += 8) {
-                    uint64_t v = *(uint64_t *)(buf + i);
-                    int is_string = 0;
-                    for (int k = 0; k < nstrings; k++)
-                        if (strings[k] == v) { is_string = 1; break; }
-                    if (!is_string) continue;
-                    {
-                        uint64_t layer = addr + off + i - OFF_NAME;
-                        uint64_t name = 0, contents = 0, handle = 0;
-                        if (!is_user_ptr(layer)) continue;
-                        if (read_mem(task, layer + OFF_NAME, &name, 8) || name != v) continue;
-                        if (read_mem(task, layer + OFF_CONTENTS, &contents, 8)) continue;
-                        if (contents && !is_user_ptr(contents)) continue;
-                        if (read_mem(task, layer + OFF_HANDLE, &handle, 8)) continue;
-                        if (handle && !is_user_ptr(handle)) continue;
-                        {
-                            int dup = 0;
-                            for (int k = 0; k < found; k++)
-                                if (out[k] == layer) { dup = 1; break; }
-                            if (dup) continue;
-                        }
-                        if (found < max) out[found] = layer;
-                        found++;
-                    }
-                }
-            }
-        }
-        addr += size;
-    }
-    free(buf);
-    gettimeofday(&tv1, NULL);
-    if (secs) *secs = (tv1.tv_sec - tv0.tv_sec) + (tv1.tv_usec - tv0.tv_usec) / 1e6;
-    return found;
-}
-
-static int enable(task_t task) {
-    uint64_t layers[MAX_LAYERS] = {0};
-    double secs = 0;
-    int n, ok = 0;
-
-    n = find_render_layers(task, layers, MAX_LAYERS, &secs);
-    if (n <= 0) {
-        fprintf(stderr, "t26: no SLMenuBarBackdropLayer render layer found\n");
-        return 1;
-    }
-    if (n > MAX_LAYERS) n = MAX_LAYERS;
-    printf("found %d backdrop render layer(s) in %.2fs\n", n, secs);
-
-    for (int i = 0; i < n; i++) {
-        uint64_t contents = 0, flags = 0;
-        uint64_t zero = 0, nf;
-        uint64_t rb_c = 1, rb_f = 0;
-
-        if (read_mem(task, layers[i] + OFF_CONTENTS, &contents, 8) ||
-            read_mem(task, layers[i] + OFF_FLAGS, &flags, 8)) {
-            fprintf(stderr, "t26: layer %#llx unreadable, skipped\n",
-                    (unsigned long long)layers[i]);
-            continue;
-        }
-        int already = (contents == 0 && (flags & (1ULL << HIDDEN_BIT)));
-        printf("  layer %#llx: %s (contents=%#llx flags=%#llx)\n",
-               (unsigned long long)layers[i],
-               already ? "transparent" : "not transparent",
-               (unsigned long long)contents, (unsigned long long)flags);
-        if (already) { ok++; continue; }
-
-        nf = flags | (1ULL << HIDDEN_BIT);
-        if (write_mem(task, layers[i] + OFF_CONTENTS, &zero, 8) ||
-            write_mem(task, layers[i] + OFF_FLAGS, &nf, 8) ||
-            read_mem(task, layers[i] + OFF_CONTENTS, &rb_c, 8) ||
-            read_mem(task, layers[i] + OFF_FLAGS, &rb_f, 8)) {
-            fprintf(stderr, "t26: layer %#llx write failed\n",
-                    (unsigned long long)layers[i]);
-            continue;
-        }
-        if (rb_c != 0 || !(rb_f & (1ULL << HIDDEN_BIT))) {
-            fprintf(stderr, "t26: layer %#llx readback mismatch\n",
-                    (unsigned long long)layers[i]);
-            continue;
-        }
-        printf("  enabled %#llx\n", (unsigned long long)layers[i]);
-        ok++;
-    }
-    printf("%s: %d/%d layer(s) transparent\n", ok == n ? "ok" : "partial", ok, n);
-    return ok == n ? 0 : 1;
-}
-
-static void usage(const char *argv0) {
-    fprintf(stderr, "usage: %s\n"
-                    "  make the menu bar transparent (keeps text/icons)\n"
-                    "  undo: log out / restart WindowServer\n", argv0);
-}
-
-int main(int argc, char **argv) {
+static int one_shot(void) {
     task_t task;
     pid_t pid;
-    int rc;
+    uint64_t layers[T26_MAX_LAYERS] = {0};
+    double secs = 0;
+    int n, ok = 0, rc = 1;
 
-    if (argc != 1) {
-        usage(argv[0]);
-        return 2;
-    }
-    if (geteuid() != 0) {
-        fprintf(stderr, "t26: needs root: sudo %s\n", argv[0]);
-        return 3;
-    }
-    pid = window_server_pid();
+    pid = t26_window_server_pid();
     if (pid <= 0) {
         fprintf(stderr, "t26: WindowServer not found\n");
         return 1;
@@ -282,7 +42,196 @@ int main(int argc, char **argv) {
         fprintf(stderr, "t26: task_for_pid(%d) failed; SIP must be disabled\n", (int)pid);
         return 1;
     }
-    rc = enable(task);
+
+    n = t26_find_layers(task, layers, T26_MAX_LAYERS, &secs);
+    if (n <= 0) {
+        fprintf(stderr, "t26: no SLMenuBarBackdropLayer render layer found\n");
+        mach_port_deallocate(mach_task_self(), task);
+        return 1;
+    }
+    if (n > T26_MAX_LAYERS) n = T26_MAX_LAYERS;
+    printf("found %d backdrop render layer(s) in %.2fs\n", n, secs);
+
+    for (int i = 0; i < n; i++) {
+        struct t26_layer st;
+        if (t26_read_state(task, layers[i], &st)) {
+            fprintf(stderr, "t26: layer %#llx unreadable, skipped\n",
+                    (unsigned long long)layers[i]);
+            continue;
+        }
+        {
+            int already = t26_is_transparent(&st);
+            printf("  layer %#llx: %s (contents=%#llx flags=%#llx)\n",
+                   (unsigned long long)layers[i],
+                   already ? "transparent" : "not transparent",
+                   (unsigned long long)st.contents, (unsigned long long)st.flags);
+            if (already) { ok++; continue; }
+        }
+        if (t26_write_state(task, layers[i])) {
+            fprintf(stderr, "t26: layer %#llx write failed\n",
+                    (unsigned long long)layers[i]);
+            continue;
+        }
+        printf("  enabled %#llx\n", (unsigned long long)layers[i]);
+        ok++;
+    }
+    printf("%s: %d/%d layer(s) transparent\n", ok == n ? "ok" : "partial", ok, n);
+    if (ok == n) rc = 0;
     mach_port_deallocate(mach_task_self(), task);
     return rc;
+}
+
+static int write_text(const char *path, const char *text) {
+    FILE *f = fopen(path, "w");
+    if (!f) return -1;
+    if (fputs(text, f) == EOF) { fclose(f); return -1; }
+    fclose(f);
+    chmod(path, 0644);
+    chown(path, 0, 0);
+    return 0;
+}
+
+static int run_cmd(const char *fmt, ...) {
+    char cmd[2048];
+    va_list ap;
+    int st;
+    va_start(ap, fmt);
+    vsnprintf(cmd, sizeof cmd, fmt, ap);
+    va_end(ap);
+    st = system(cmd);
+    if (st == -1) return -1;
+    return WIFEXITED(st) ? WEXITSTATUS(st) : -1;
+}
+
+static uid_t agent_uid(void) {
+    const char *s = getenv("SUDO_UID");
+    struct stat st;
+    if (s && *s) return (uid_t)strtoul(s, NULL, 10);
+    if (stat("/dev/console", &st) == 0 && st.st_uid != 0) return st.st_uid;
+    return 0;
+}
+
+static const char *daemon_plist_text =
+"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+"<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" "
+"\"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n"
+"<plist version=\"1.0\">\n"
+"<dict>\n"
+"  <key>Label</key><string>" DAEMON_LABEL "</string>\n"
+"  <key>ProgramArguments</key><array><string>" DAEMON_PATH "</string></array>\n"
+"  <key>RunAtLoad</key><true/>\n"
+"  <key>KeepAlive</key><true/>\n"
+"  <key>ProcessType</key><string>Background</string>\n"
+"  <key>Nice</key><integer>10</integer>\n"
+"  <key>ThrottleInterval</key><integer>5</integer>\n"
+"  <key>StandardOutPath</key><string>/var/log/t26d.log</string>\n"
+"  <key>StandardErrorPath</key><string>/var/log/t26d.log</string>\n"
+"</dict>\n"
+"</plist>\n";
+
+static const char *agent_plist_text =
+"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+"<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" "
+"\"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n"
+"<plist version=\"1.0\">\n"
+"<dict>\n"
+"  <key>Label</key><string>" AGENT_LABEL "</string>\n"
+"  <key>ProgramArguments</key><array><string>" AGENT_PATH "</string></array>\n"
+"  <key>RunAtLoad</key><true/>\n"
+"  <key>KeepAlive</key><true/>\n"
+"  <key>LimitLoadToSessionType</key><string>Aqua</string>\n"
+"  <key>ProcessType</key><string>Background</string>\n"
+"</dict>\n"
+"</plist>\n";
+
+static int service_install(void) {
+    uid_t uid;
+
+    if (access(DAEMON_PATH, X_OK) != 0 || access(AGENT_PATH, X_OK) != 0) {
+        fprintf(stderr, "t26: service binaries missing; run 'sudo make install' first\n");
+        return 1;
+    }
+    if (write_text(DAEMON_PLIST, daemon_plist_text) ||
+        write_text(AGENT_PLIST, agent_plist_text)) {
+        fprintf(stderr, "t26: cannot write launchd plists\n");
+        return 1;
+    }
+
+    run_cmd("launchctl bootout system/" DAEMON_LABEL " 2>/dev/null");
+    if (run_cmd("launchctl bootstrap system " DAEMON_PLIST) != 0)
+        fprintf(stderr, "t26: launchctl bootstrap daemon failed\n");
+    run_cmd("launchctl enable system/" DAEMON_LABEL);
+
+    uid = agent_uid();
+    if (uid != 0) {
+        run_cmd("launchctl bootout gui/%u/" AGENT_LABEL " 2>/dev/null", uid);
+        if (run_cmd("launchctl bootstrap gui/%u " AGENT_PLIST, uid) != 0)
+            fprintf(stderr, "t26: agent will load at next GUI login\n");
+        else
+            run_cmd("launchctl enable gui/%u/" AGENT_LABEL, uid);
+    } else {
+        fprintf(stderr, "t26: agent will load at next GUI login\n");
+    }
+
+    printf("installed " DAEMON_LABEL " and " AGENT_LABEL "\n");
+    printf("log: /var/log/t26d.log\n");
+    return 0;
+}
+
+static int service_uninstall(void) {
+    uid_t uid = agent_uid();
+    run_cmd("launchctl bootout system/" DAEMON_LABEL " 2>/dev/null");
+    if (uid != 0)
+        run_cmd("launchctl bootout gui/%u/" AGENT_LABEL " 2>/dev/null", uid);
+    unlink(DAEMON_PLIST);
+    unlink(AGENT_PLIST);
+    printf("removed " DAEMON_LABEL " and " AGENT_LABEL "\n");
+    return 0;
+}
+
+static int service_status(void) {
+    uid_t uid = agent_uid();
+    if (access(DAEMON_PLIST, F_OK) != 0 && access(AGENT_PLIST, F_OK) != 0) {
+        printf("not installed\n");
+        return 0;
+    }
+    printf("== " DAEMON_LABEL " ==\n");
+    run_cmd("launchctl print system/" DAEMON_LABEL " 2>&1 | head -30");
+    if (uid != 0) {
+        printf("\n== " AGENT_LABEL " (uid %u) ==\n", uid);
+        run_cmd("launchctl print gui/%u/" AGENT_LABEL " 2>&1 | head -30", uid);
+    }
+    printf("\nlog: /var/log/t26d.log\n");
+    return 0;
+}
+
+static void usage(const char *argv0) {
+    fprintf(stderr,
+            "usage: %s                         apply now\n"
+            "       %s service install          install launchd daemon + agent\n"
+            "       %s service uninstall        remove the service\n"
+            "       %s service status           show launchd state\n",
+            argv0, argv0, argv0, argv0);
+}
+
+int main(int argc, char **argv) {
+    if (argc == 1) {
+        if (geteuid() != 0) {
+            fprintf(stderr, "t26: needs root: sudo %s\n", argv[0]);
+            return 3;
+        }
+        return one_shot();
+    }
+    if (argc == 3 && strcmp(argv[1], "service") == 0) {
+        if (geteuid() != 0) {
+            fprintf(stderr, "t26: needs root: sudo %s %s %s\n",
+                    argv[0], argv[1], argv[2]);
+            return 3;
+        }
+        if (strcmp(argv[2], "install") == 0) return service_install();
+        if (strcmp(argv[2], "uninstall") == 0) return service_uninstall();
+        if (strcmp(argv[2], "status") == 0) return service_status();
+    }
+    usage(argv[0]);
+    return 2;
 }
