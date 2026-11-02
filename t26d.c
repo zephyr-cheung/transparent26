@@ -1,11 +1,11 @@
 // t26d — root launchd daemon for t26.
 //
-// Keeps the WindowServer task port and the backdrop render-layer addresses in
-// memory.  GUI events arrive as Darwin notifications from t26-agent; a 60 s
-// heartbeat is only a safety net.  It reads the cached layer fields first and
-// writes only when they are not in the target state.  A full heap scan happens
-// on startup, on WindowServer restart, or when a cached layer is no longer a
-// valid backdrop.
+// Keeps the WindowServer task port and the backdrop CA::Render::Handle
+// addresses in memory.  GUI events arrive as Darwin notifications from
+// t26-agent; a 60 s heartbeat is only a safety net.  A handle's +0x10 field is
+// the current committed CA::Render::Layer, so a rebuild can be repaired without
+// rescanning WindowServer's heap.  A full scan happens only on startup, on
+// WindowServer restart, or when a cached handle is no longer valid.
 #include "t26-core.h"
 
 #include <dispatch/dispatch.h>
@@ -26,8 +26,8 @@
 
 static task_t ws_task = MACH_PORT_NULL;
 static pid_t ws_pid = 0;
-static struct t26_layer cache[T26_MAX_LAYERS];
-static int cache_n = 0;
+static uint64_t handles[T26_MAX_LAYERS];
+static int handle_n = 0;
 static time_t last_scan = 0;
 static dispatch_queue_t q;
 static int scheduled = 0;
@@ -59,29 +59,25 @@ static int ensure_task(void) {
         return -1;
     }
     ws_pid = pid;
-    cache_n = 0;
+    handle_n = 0;
     logmsg("attached to WindowServer %d", (int)pid);
     return 0;
 }
 
 static void scan_and_cache(void) {
-    uint64_t layers[T26_MAX_LAYERS] = {0};
+    uint64_t found[T26_MAX_LAYERS] = {0};
     double secs = 0;
-    int n = t26_find_layers(ws_task, layers, T26_MAX_LAYERS, &secs);
+    int n = t26_find_handles(ws_task, found, T26_MAX_LAYERS, &secs);
     if (n < 0) {
         logmsg("scan timed out/failed");
-        cache_n = 0;
+        handle_n = 0;
         return;
     }
     if (n > T26_MAX_LAYERS) n = T26_MAX_LAYERS;
     last_scan = time(NULL);
-    cache_n = 0;
-    for (int i = 0; i < n; i++) {
-        struct t26_layer st;
-        if (t26_read_state(ws_task, layers[i], &st) == 0)
-            cache[cache_n++] = st;
-    }
-    logmsg("scan: %d backdrop layer(s) in %.2fs", cache_n, secs);
+    handle_n = n;
+    memcpy(handles, found, (size_t)n * sizeof handles[0]);
+    logmsg("scan: %d backdrop handle(s) in %.2fs", handle_n, secs);
 }
 
 static void apply_now(int rescan) {
@@ -95,10 +91,13 @@ static void apply_now(int rescan) {
         return;
     }
 
-    rebuilt = rescan || cache_n == 0;
+    rebuilt = rescan || handle_n == 0;
     if (!rebuilt) {
-        for (int i = 0; i < cache_n; i++) {
-            if (!t26_is_backdrop(ws_task, cache[i].layer)) { rebuilt = 1; break; }
+        for (int i = 0; i < handle_n; i++) {
+            if (!t26_handle_valid(ws_task, handles[i])) {
+                rebuilt = 1;
+                break;
+            }
         }
     }
     if (rebuilt) {
@@ -112,7 +111,7 @@ static void apply_now(int rescan) {
             return;
         }
         scan_and_cache();
-        if (cache_n == 0) {
+        if (handle_n == 0) {
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 10ull * NSEC_PER_SEC), q, ^{
                 schedule(1);
             });
@@ -120,29 +119,34 @@ static void apply_now(int rescan) {
         }
     }
 
-    for (int i = 0; i < cache_n; i++) {
+    for (int i = 0; i < handle_n; i++) {
+        uint64_t layer = 0;
         struct t26_layer st;
-        if (t26_read_state(ws_task, cache[i].layer, &st)) {
-            logmsg("layer %#llx unreadable; rescanning", (unsigned long long)cache[i].layer);
-            cache_n = 0;
+        if (!t26_handle_valid(ws_task, handles[i])) {
+            logmsg("handle %#llx invalid; rescanning", (unsigned long long)handles[i]);
+            handle_n = 0;
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 2ull * NSEC_PER_SEC), q, ^{
                 schedule(1);
             });
             return;
+        }
+        // A valid handle can temporarily point at 0 or at an offscreen layer
+        // while the tree is being rebuilt.  Skip it; a later reapply will see
+        // the new current layer.  Only a destroyed/reused handle invalidates
+        // the cache.
+        if (t26_handle_current(ws_task, handles[i], &layer) ||
+            !t26_is_backdrop(ws_task, layer))
+            continue;
+        if (t26_read_state(ws_task, layer, &st)) {
+            logmsg("layer %#llx unreadable; skipping", (unsigned long long)layer);
+            continue;
         }
         if (t26_is_transparent(&st)) continue;
-        if (!t26_is_backdrop(ws_task, cache[i].layer)) {
-            logmsg("layer %#llx changed; rescanning", (unsigned long long)cache[i].layer);
-            cache_n = 0;
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 2ull * NSEC_PER_SEC), q, ^{
-                schedule(1);
-            });
-            return;
-        }
-        if (t26_write_state(ws_task, cache[i].layer) == 0)
-            logmsg("enabled %#llx", (unsigned long long)cache[i].layer);
+        if (t26_write_state(ws_task, layer) == 0)
+            logmsg("enabled %#llx via handle %#llx", (unsigned long long)layer,
+                   (unsigned long long)handles[i]);
         else
-            logmsg("write failed for %#llx", (unsigned long long)cache[i].layer);
+            logmsg("write failed for %#llx", (unsigned long long)layer);
     }
 }
 
@@ -188,7 +192,7 @@ int main(void) {
                               (uint64_t)HEARTBEAT_SEC * NSEC_PER_SEC,
                               5ull * NSEC_PER_SEC);
     dispatch_source_set_event_handler(timer, ^{
-        schedule(1);
+        schedule(0);
     });
     dispatch_resume(timer);
 

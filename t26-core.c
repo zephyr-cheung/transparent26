@@ -229,6 +229,43 @@ int t26_is_transparent(const struct t26_layer *layer) {
            (layer->flags & (1ULL << HIDDEN_BIT)) != 0;
 }
 
+int t26_handle_valid(task_t task, uint64_t handle) {
+    uint32_t type = 0;
+    if (!is_user_ptr(handle)) return 0;
+    if (read_mem(task, handle + T26_OFF_HANDLE_TYPE, &type, 4)) return 0;
+    return type == T26_HANDLE_TYPE;
+}
+
+int t26_handle_current(task_t task, uint64_t handle, uint64_t *layer) {
+    uint64_t current = 0;
+    if (!layer || !t26_handle_valid(task, handle)) return -1;
+    if (read_mem(task, handle + T26_OFF_HANDLE_LAYER, &current, 8)) return -1;
+    if (!is_user_ptr(current)) return -1;
+    *layer = current;
+    return 0;
+}
+
+int t26_find_handles(task_t task, uint64_t *out, int max, double *secs) {
+    uint64_t layers[T26_MAX_LAYERS] = {0};
+    int n, found = 0;
+    n = t26_find_layers(task, layers, T26_MAX_LAYERS, secs);
+    if (n <= 0) return n;
+    if (n > T26_MAX_LAYERS) n = T26_MAX_LAYERS;
+    for (int i = 0; i < n; i++) {
+        uint64_t handle = 0;
+        if (read_mem(task, layers[i] + OFF_HANDLE, &handle, 8) || !is_user_ptr(handle))
+            continue;
+        if (!t26_handle_valid(task, handle)) continue;
+        {
+            int dup = 0;
+            for (int k = 0; k < found; k++) if (out[k] == handle) { dup = 1; break; }
+            if (dup) continue;
+        }
+        if (found < max) out[found++] = handle;
+    }
+    return found;
+}
+
 int t26_write_state(task_t task, uint64_t layer) {
     uint64_t zero = 0, flags = 0, nf, rb_c = 1, rb_f = 0;
     if (!name_matches(task, layer)) return -1;

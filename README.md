@@ -107,15 +107,16 @@ string or the render-layer layout changed — see docs/02.
 `sudo make install` installs three binaries; `sudo t26 service install` registers:
 
 - `t26d` — root `LaunchDaemon` (C); holds the WindowServer task port and a cache
-  of backdrop render layers, re-applies when the menu bar is rebuilt;
+  of backdrop `CA::Render::Handle` objects, re-applies when the menu bar is rebuilt;
 - `t26-agent` — per-user `LaunchAgent` (Objective-C, because it uses
   `NSWorkspace`); turns front-app, Space, session, display and lock/unlock
   notifications into Darwin notifications for `t26d`.
 
-The daemon does not scan on every event. It reads the cached layer's fields and
-writes only when the layer is not transparent. A full scan happens on startup,
-on WindowServer restart, or when a cached layer is no longer a valid backdrop.
-A 60 s heartbeat forces a periodic rescan as a safety net.
+The daemon does not scan on every event. It reads each cached handle's current
+render layer (`handle + 0x10`) and that layer's fields, and writes only when the
+layer is not transparent. A full scan happens on startup, on WindowServer
+restart, or when a cached handle is no longer valid. The 60 s heartbeat only
+re-checks the cached handles; it never scans the heap.
 
 The service never runs `sudo` per event and is idle when nothing changes. Its log
 is `/var/log/t26d.log`. See [docs/03-service.md](docs/03-service.md) for the
