@@ -75,8 +75,10 @@ so it does not need kext approval.
 sudo t26             # make the menu bar transparent; keep text/icons
 ```
 
-Run it again after WindowServer rebuilds the menu bar (app switch, wallpaper
-change, display change): a rebuild may replace the render layer. The scan costs
+It reads the fields first: a layer that is already in the target state is reported
+as `transparent` and left untouched; a layer that is not is repaired. Run it again
+after WindowServer rebuilds the menu bar (app switch, wallpaper change, display
+change): a rebuild may replace the render layer. The scan costs
 about 2–5 seconds of CPU in the `t26` process, but it does not stop WindowServer
 and does not freeze the desktop.
 

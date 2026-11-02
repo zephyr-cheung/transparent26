@@ -226,9 +226,12 @@ static int enable(task_t task) {
                     (unsigned long long)layers[i]);
             continue;
         }
-        if (contents == 0 && (flags & (1ULL << HIDDEN_BIT)))
-            fprintf(stderr, "t26: warning: layer %#llx is already transparent\n",
-                    (unsigned long long)layers[i]);
+        int already = (contents == 0 && (flags & (1ULL << HIDDEN_BIT)));
+        printf("  layer %#llx: %s (contents=%#llx flags=%#llx)\n",
+               (unsigned long long)layers[i],
+               already ? "transparent" : "not transparent",
+               (unsigned long long)contents, (unsigned long long)flags);
+        if (already) { ok++; continue; }
 
         nf = flags | (1ULL << HIDDEN_BIT);
         if (write_mem(task, layers[i] + OFF_CONTENTS, &zero, 8) ||

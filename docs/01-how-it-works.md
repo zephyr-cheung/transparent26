@@ -90,9 +90,17 @@ keeps the scan to a few seconds. Chunks are 16 MiB with a 64-byte overlap so a
 name string crossing a chunk boundary is still found. A 60-second deadline
 prevents a pathological scan from hanging.
 
-## 4. Writing
+## 4. Reading first, then writing
 
-`mach_vm_write` writes the two 8-byte fields, then `t26` reads them back:
+For every scanned layer `t26` first reads `+0x60` and `+0x24`. It considers the
+layer transparent only when:
+
+```
+contents == 0 && (flags & (1 << 34)) != 0
+```
+
+If that is already true, it prints `transparent` and does not write. Otherwise it
+prints `not transparent` and applies the two writes, then reads them back:
 
 ```c
 write_mem(task, layer + 0x60, &zero, 8);
