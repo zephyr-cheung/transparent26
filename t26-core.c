@@ -267,9 +267,13 @@ int t26_find_handles(task_t task, uint64_t *out, int max, double *secs) {
 }
 
 int t26_write_state(task_t task, uint64_t layer) {
-    uint64_t zero = 0, flags = 0, nf, rb_c = 1, rb_f = 0;
+    uint64_t zero = 0, contents = 0, flags = 0, nf, rb_c = 1, rb_f = 0;
     if (!name_matches(task, layer)) return -1;
+    if (read_mem(task, layer + OFF_CONTENTS, &contents, 8)) return -1;
     if (read_mem(task, layer + OFF_FLAGS, &flags, 8)) return -1;
+    // The caller normally checked this already.  Re-check here so every caller
+    // is safe: a layer that is already in the target state is not modified.
+    if (contents == 0 && (flags & (1ULL << HIDDEN_BIT))) return 0;
     nf = flags | (1ULL << HIDDEN_BIT);
     if (write_mem(task, layer + OFF_CONTENTS, &zero, 8)) return -1;
     if (write_mem(task, layer + OFF_FLAGS, &nf, 8)) return -1;

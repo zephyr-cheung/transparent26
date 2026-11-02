@@ -64,8 +64,9 @@ On `reapply`, for each cached handle:
    (`t26_is_backdrop`);
 3. read `rl + 0x60` and `rl + 0x24`;
 4. if `contents == 0 && (flags & (1 << 34))`, do nothing;
-5. otherwise call `t26_write_state`, which validates the name again, writes both
-   fields, and reads them back.
+5. otherwise call `t26_write_state`, which validates the name again, skips the
+   write if the layer is already transparent, otherwise writes both fields and
+   reads them back.
 
 If a handle is unreadable, its type is no longer `0x16`, or WindowServer's PID
 changed, the cache is dropped and a full scan is scheduled. A still-valid handle
